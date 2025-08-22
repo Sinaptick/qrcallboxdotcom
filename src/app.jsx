@@ -463,9 +463,104 @@ function RegisterForm({ onSwitch }) {
 // -----------------------------
 // 🧭 App Shell w/ Tabs (single definition)
 // -----------------------------
-function Settings({ user, onSignOut }) {
+function Settings({ user }) {
   const { isDark, toggleTheme } = useTheme();
-  
+  const { db } = useFirebase();
+  const [userDoc, setUserDoc] = useState(null);
+  const [pendingChanges, setPendingChanges] = useState({});
+  const [formData, setFormData] = useState({
+    firstName: '',
+    lastName: '',
+    phone: '',
+    storeNumber: '',
+    jobTitle: ''
+  });
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState('');
+  const [showChangeForm, setShowChangeForm] = useState(false);
+
+  useEffect(() => {
+    async function loadUserData() {
+      try {
+        const { getDoc, doc } = await import("firebase/firestore");
+        const userDocRef = doc(db, "users", user.uid);
+        const snap = await getDoc(userDocRef);
+        
+        if (snap.exists()) {
+          const userData = snap.data();
+          setUserDoc(userData);
+          setFormData({
+            firstName: userData.firstName || '',
+            lastName: userData.lastName || '',
+            phone: userData.phone || '',
+            storeNumber: userData.storeNumber || '',
+            jobTitle: userData.jobTitle || ''
+          });
+          setPendingChanges(userData.pendingChanges || {});
+        }
+      } catch (err) {
+        console.error("Error loading user data:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    
+    if (user?.uid) loadUserData();
+  }, [user?.uid, db]);
+
+  const handleFieldChange = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSubmitChanges = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setMessage('');
+
+    try {
+      const { updateDoc, doc, serverTimestamp } = await import("firebase/firestore");
+      
+      // Find what fields have changed
+      const changes = {};
+      Object.keys(formData).forEach(field => {
+        if (formData[field] !== (userDoc[field] || '')) {
+          changes[field] = formData[field];
+        }
+      });
+
+      if (Object.keys(changes).length === 0) {
+        setMessage('No changes to submit.');
+        setSubmitting(false);
+        return;
+      }
+
+      // Save pending changes
+      await updateDoc(doc(db, "users", user.uid), {
+        pendingChanges: {
+          ...changes,
+          requestedAt: serverTimestamp(),
+          status: 'pending'
+        }
+      });
+
+      setPendingChanges({
+        ...changes,
+        requestedAt: new Date(),
+        status: 'pending'
+      });
+
+      setMessage('Changes submitted for admin approval.');
+      setShowChangeForm(false);
+    } catch (err) {
+      setMessage('Error submitting changes: ' + (err.message || err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) return <div className="animate-pulse text-muted">Loading settings...</div>;
+
   return (
     <div className="space-y-6">
       {/* Theme Settings */}
@@ -494,13 +589,135 @@ function Settings({ user, onSignOut }) {
         </div>
       </div>
 
-      {/* Account Settings */}
+      {/* Account Information */}
       <div className="bg-secondary rounded-xl p-4 border border-themed">
-        <h3 className="text-lg font-semibold text-primary mb-3">Account</h3>
-        <div className="text-sm text-muted mb-3">
-          Signed in as <span className="font-medium text-primary">{user.displayName || user.email}</span>
+        <h3 className="text-lg font-semibold text-primary mb-3">Account Information</h3>
+        
+        {/* Current Info */}
+        <div className="mb-4 p-3 bg-tertiary rounded border border-themed">
+          <div className="text-sm font-medium text-primary mb-2">Current Information</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+            <div><span className="text-muted">Email:</span> <span className="text-primary">{user.email}</span></div>
+            <div><span className="text-muted">Name:</span> <span className="text-primary">{userDoc?.firstName} {userDoc?.lastName}</span></div>
+            <div><span className="text-muted">Phone:</span> <span className="text-primary">{userDoc?.phone || 'Not set'}</span></div>
+            <div><span className="text-muted">Store:</span> <span className="text-primary">{userDoc?.storeNumber || 'Not set'}</span></div>
+            <div><span className="text-muted">Job Title:</span> <span className="text-primary">{userDoc?.jobTitle || 'Not set'}</span></div>
+          </div>
         </div>
-        <Button onClick={onSignOut}>Sign out</Button>
+
+        {/* Pending Changes Status */}
+        {pendingChanges.status === 'pending' && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded text-amber-800">
+            <div className="text-sm font-medium mb-1">Changes Pending Approval</div>
+            <div className="text-xs">
+              Submitted: {pendingChanges.requestedAt?.toLocaleDateString?.() || 'Recently'}
+            </div>
+            <div className="mt-2 text-xs">
+              {Object.entries(pendingChanges).filter(([key]) => key !== 'requestedAt' && key !== 'status').map(([field, value]) => (
+                <div key={field}><span className="capitalize">{field}:</span> {value}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Request Changes Button/Form */}
+        {!showChangeForm ? (
+          <div className="text-center">
+            <Button 
+              onClick={() => setShowChangeForm(true)}
+              disabled={pendingChanges.status === 'pending'}
+              className="w-full sm:w-auto"
+            >
+              Request Account Changes
+            </Button>
+            {pendingChanges.status === 'pending' && (
+              <div className="text-xs text-muted mt-2">
+                Changes are pending admin approval
+              </div>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleSubmitChanges} className="space-y-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium text-primary">Request Account Changes</div>
+              <button
+                type="button"
+                onClick={() => { setShowChangeForm(false); setMessage(''); }}
+                className="text-xs text-muted hover:text-primary"
+              >
+                Cancel
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label="First Name"
+                value={formData.firstName}
+                onChange={(e) => handleFieldChange('firstName', e.target.value)}
+              />
+              <Input
+                label="Last Name"
+                value={formData.lastName}
+                onChange={(e) => handleFieldChange('lastName', e.target.value)}
+              />
+              <Input
+                label="Phone"
+                value={formData.phone}
+                onChange={(e) => handleFieldChange('phone', e.target.value)}
+              />
+              <Input
+                label="Store Number"
+                value={formData.storeNumber}
+                onChange={(e) => handleFieldChange('storeNumber', e.target.value)}
+              />
+            </div>
+            
+            <Input
+              label="Job Title"
+              value={formData.jobTitle}
+              onChange={(e) => handleFieldChange('jobTitle', e.target.value)}
+            />
+
+            {message && (
+              <div className={`text-sm p-2 rounded ${
+                message.includes('Error') ? 'bg-red-100 text-red-700 border border-red-200' : 
+                'bg-green-100 text-green-700 border border-green-200'
+              }`}>
+                {message}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button 
+                type="submit" 
+                disabled={submitting}
+                className="w-full sm:w-auto"
+              >
+                {submitting ? 'Submitting...' : 'Submit Changes for Approval'}
+              </Button>
+              <Button 
+                type="button"
+                onClick={() => { setShowChangeForm(false); setMessage(''); }}
+                className="bg-tertiary text-primary hover:bg-secondary"
+              >
+                Cancel
+              </Button>
+            </div>
+            
+            <div className="text-xs text-muted">
+              Changes require admin approval before taking effect.
+            </div>
+          </form>
+        )}
+
+        {message && !showChangeForm && (
+          <div className={`text-sm p-2 rounded mt-3 ${
+            message.includes('Error') ? 'bg-red-100 text-red-700 border border-red-200' : 
+            'bg-green-100 text-green-700 border border-green-200'
+          }`}>
+            {message}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -605,6 +822,118 @@ function Dashboard() {
           {loading ? "—" : stats.avgResponseTime > 0 ? `${stats.avgResponseTime}m` : "—"}
         </div>
         <div className="text-xs text-muted mt-1">minutes</div>
+      </div>
+    </div>
+  );
+}
+
+// 📋 Admin pending changes management
+function PendingChangesList({ db }) {
+  const [pendingUsers, setPendingUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const { getDocs, collection, query, where } = await import("firebase/firestore");
+        const q = query(collection(db, "users"), where("pendingChanges.status", "==", "pending"));
+        const snap = await getDocs(q);
+        if (mounted) {
+          setPendingUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        }
+      } catch (err) {
+        if (mounted) setError("Error loading pending changes: " + (err.message || err));
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [db]);
+
+  async function handleApproveChanges(userId, pendingChanges) {
+    try {
+      const { updateDoc, doc } = await import("firebase/firestore");
+      
+      // Apply the pending changes to the user document
+      const updates = { ...pendingChanges };
+      delete updates.requestedAt;
+      delete updates.status;
+      
+      // Clear pending changes
+      updates.pendingChanges = null;
+      
+      await updateDoc(doc(db, "users", userId), updates);
+      setPendingUsers(users => users.filter(u => u.id !== userId));
+    } catch (err) {
+      alert("Error approving changes: " + (err.message || err));
+    }
+  }
+
+  async function handleRejectChanges(userId) {
+    try {
+      const { updateDoc, doc } = await import("firebase/firestore");
+      await updateDoc(doc(db, "users", userId), {
+        pendingChanges: null
+      });
+      setPendingUsers(users => users.filter(u => u.id !== userId));
+    } catch (err) {
+      alert("Error rejecting changes: " + (err.message || err));
+    }
+  }
+
+  if (loading) return <div className="mb-4 text-sm text-muted">Loading pending changes…</div>;
+  if (error) return <div className="mb-4 text-sm text-red-600">{error}</div>;
+  if (!pendingUsers.length) return <div className="mb-4 text-sm text-muted">No pending profile changes.</div>;
+
+  return (
+    <div className="mb-6">
+      <div className="font-semibold mb-2 text-primary">Pending Profile Changes</div>
+      <div className="space-y-4">
+        {pendingUsers.map(user => (
+          <div key={user.id} className="border border-themed rounded-xl p-4 bg-secondary">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="font-medium text-primary">{user.firstName} {user.lastName}</div>
+                <div className="text-sm text-muted">{user.email}</div>
+                <div className="text-xs text-muted">
+                  Requested: {user.pendingChanges?.requestedAt?.toDate?.()?.toLocaleDateString() || 'Recently'}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button 
+                  onClick={() => handleApproveChanges(user.id, user.pendingChanges)}
+                  className="bg-green-500 hover:bg-green-600"
+                >
+                  Approve
+                </Button>
+                <Button 
+                  onClick={() => handleRejectChanges(user.id)}
+                  className="bg-red-500 hover:bg-red-600"
+                >
+                  Reject
+                </Button>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              {Object.entries(user.pendingChanges || {}).filter(([key]) => key !== 'requestedAt' && key !== 'status').map(([field, newValue]) => (
+                <div key={field} className="border border-themed rounded p-2 bg-tertiary">
+                  <div className="font-medium text-primary capitalize">{field.replace(/([A-Z])/g, ' $1')}</div>
+                  <div className="text-red-600">
+                    <span className="text-xs">Current:</span> {user[field] || 'Not set'}
+                  </div>
+                  <div className="text-green-600">
+                    <span className="text-xs">Requested:</span> {newValue}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -919,13 +1248,21 @@ function Shell({ user, onSignOut }) {
                 <div className="text-xs text-muted hidden sm:block">Real-time assistance via QR</div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="text-xs sm:text-sm text-secondary truncate max-w-24 sm:max-w-none">
-                {user.displayName?.split(' ')[0] || user.email?.split('@')[0]}
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="text-right">
+                <div className="text-xs sm:text-sm text-secondary truncate max-w-24 sm:max-w-none">
+                  {user.displayName?.split(' ')[0] || user.email?.split('@')[0]}
+                </div>
+                <div className="text-xs text-muted hidden sm:block">
+                  {user.displayName ? user.email?.split('@')[0] : ''}
+                </div>
               </div>
-              <div className="text-xs text-muted hidden sm:block">
-                {user.displayName ? user.email?.split('@')[0] : ''}
-              </div>
+              <button
+                onClick={onSignOut}
+                className="text-xs px-2 py-1 rounded border border-themed bg-secondary hover:bg-tertiary text-primary"
+              >
+                Sign out
+              </button>
             </div>
           </div>
         </div>
@@ -1118,7 +1455,7 @@ function Shell({ user, onSignOut }) {
           <Card>
             <CardHeader title="Settings" subtitle="Manage your account" />
             <CardBody>
-              <Settings user={user} onSignOut={onSignOut} />
+              <Settings user={user} />
 
               {/* GroupMe setup */}
               <div className="mt-8">
@@ -1136,6 +1473,7 @@ function Shell({ user, onSignOut }) {
                 Welcome, admin user <span className="font-mono">sinaptick@gmail.com</span>.
               </div>
               <UnapprovedUsersList db={db} />
+              <PendingChangesList db={db} />
               <UserStatusSearch db={db} />
             </CardBody>
           </Card>

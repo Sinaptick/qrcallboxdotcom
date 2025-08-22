@@ -288,19 +288,33 @@ export const groupmeStoreToken = onRequest({
   invoker: "public"
 }, async (req, res) => {
   try {
+    logger.info("Store token request received", { 
+      method: req.method, 
+      hasBody: !!req.body,
+      headers: Object.keys(req.headers)
+    });
+    
     if (req.method !== "POST") return res.status(405).send("Use POST");
     
     const { access_token, user_id, state } = req.body;
+    logger.info("Store token request data", { 
+      hasAccessToken: !!access_token,
+      user_id: user_id,
+      state: state
+    });
     
     if (!access_token || !user_id) {
+      logger.error("Missing required fields", { hasAccessToken: !!access_token, hasUserId: !!user_id });
       return res.status(400).send("Missing access_token or user_id");
     }
     
     // Sanitize inputs
     const sanitizedUserId = sanitizeInput(String(user_id), 20);
     const sanitizedState = state ? sanitizeInput(String(state), 50) : null;
+    logger.info("Sanitized data", { sanitizedUserId, sanitizedState });
     
     // Store the token
+    logger.info("Attempting to store token in Firestore");
     await db.collection("groupme_tokens").doc(sanitizedUserId).set(
       {
         access_token,
@@ -312,12 +326,12 @@ export const groupmeStoreToken = onRequest({
       { merge: true }
     );
     
-    logger.info("GroupMe token stored", { userId: sanitizedUserId });
+    logger.info("GroupMe token stored successfully", { userId: sanitizedUserId });
     res.json({ success: true });
     
   } catch (e) {
-    logger.error("Store token error:", e.message);
-    res.status(500).send("Error storing token");
+    logger.error("Store token error:", e.message, e.stack);
+    res.status(500).send(`Error storing token: ${e.message}`);
   }
 });
 
