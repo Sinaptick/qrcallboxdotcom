@@ -1,0 +1,212 @@
+# QRcallbox
+
+A real-time assistance system that enables customers to scan QR codes and instantly notify staff for help in specific store areas. Built with React, Firebase, and includes AI-powered insights for analyzing customer assistance patterns.
+
+## 🚀 Features
+
+### Core Functionality
+- **QR Code Generation**: Create location-specific QR codes for different store areas
+- **Real-time Notifications**: Instant alerts to staff when customers need assistance
+- **User Authentication**: Secure login system with email verification and admin approval
+- **Multi-store Support**: Manage multiple store locations from a single dashboard
+
+### Analytics & Insights
+- **Heatmap Visualization**: Visual representation of assistance requests by store area
+- **AI-Powered Insights**: Natural language analysis of customer assistance patterns
+- **Time-based Filtering**: Analyze data by specific weeks and time periods
+- **Store/Area Filtering**: Filter insights by specific stores and departments
+
+### Integration
+- **GroupMe Integration**: Connect with GroupMe for team notifications
+- **Firebase Backend**: Scalable cloud infrastructure with Firestore database
+- **Print-Ready Posters**: Generate high-resolution QR code posters for printing
+
+## 🛠️ Tech Stack
+
+### Frontend
+- **React 18** - Modern UI framework
+- **Vite** - Fast build tool and development server
+- **Tailwind CSS** - Utility-first CSS framework
+- **QRCode.js** - QR code generation library
+
+### Backend & Services
+- **Firebase Authentication** - User management and authentication
+- **Firestore** - NoSQL database for real-time data
+- **Firebase Functions** - Serverless backend functions
+- **Firebase Hosting** - Static site hosting
+
+### Development Tools
+- **PostCSS** - CSS processing
+- **Autoprefixer** - CSS vendor prefixing
+- **ESLint** - Code linting (configured for functions)
+
+## 📋 Prerequisites
+
+- Node.js 20 or higher
+- Firebase CLI
+- Firebase project with the following services enabled:
+  - Authentication
+  - Firestore Database
+  - Functions
+  - Hosting
+
+## 🔧 Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/Sinaptick/qrcallboxdotcom.git
+   cd qrcallboxdotcom
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   cd functions && npm install && cd ..
+   ```
+
+3. **Firebase Configuration**
+   - Update the Firebase config in `src/app.jsx` with your project credentials
+   - Ensure your Firebase project has the required services enabled
+
+4. **Environment Variables**
+   Set up the following Firebase Functions secrets:
+   ```bash
+   firebase functions:secrets:set GROUPME_CLIENT_ID
+   ```
+
+## 🚀 Development
+
+### Start Development Server
+```bash
+npm run dev
+```
+This starts the Vite development server at `http://localhost:5173`
+
+### Build for Production
+```bash
+npm run build
+```
+This builds the app and copies the poster template to the dist folder.
+
+### Deploy to Firebase
+```bash
+firebase deploy
+```
+
+## 📱 Usage
+
+### For Store Staff
+
+1. **Account Setup**
+   - Register with your store information
+   - Wait for admin approval
+   - Verify your email address
+
+2. **Generate QR Codes**
+   - Navigate to "Generate QR" tab
+   - Enter store number (3-6 digits)
+   - Enter area name (e.g., "Electronics", "Customer Service")
+   - Generate and download/print the QR code poster
+
+3. **Monitor Assistance Requests**
+   - View real-time dashboard for active requests
+   - Analyze patterns using the Insights tab
+   - Configure GroupMe notifications in Settings
+
+### For Customers
+
+1. **Scan QR Code** placed in store areas
+2. **Get Connected** to store staff instantly
+3. **Receive Assistance** from available team members
+
+### For Administrators
+
+- **User Management**: Approve new user registrations
+- **User Search**: Look up user information by email
+- **System Overview**: Monitor all stores and areas
+
+## 🔐 Security Features
+
+- Email verification required for new accounts
+- Admin approval process for new users
+- Secure Firebase authentication
+- Input validation and sanitization
+- CORS configuration for API endpoints
+
+## 📊 Analytics Features
+
+### Heatmap Visualization
+- Visual representation of assistance request frequency
+- Filter by store, area, and time period
+- Interactive tooltips with detailed information
+
+### AI Insights
+- Natural language analysis of customer patterns
+- Trend identification and recommendations
+- Automated report generation based on filtered data
+
+### Data Filtering
+- **Store Filter**: Select one or multiple stores
+- **Area Filter**: Choose specific departments or areas
+- **Time Filter**: Analyze data by week ranges
+- **Combined Filters**: Mix and match for detailed analysis
+
+## 🔧 Configuration
+
+### Firebase Functions Configuration
+The app uses Firebase Functions for:
+- QR token generation (`/api/mint`)
+- Short URL handling (`/s`)
+- GroupMe OAuth integration
+- Bot creation and management
+
+### GroupMe Integration
+1. Create a GroupMe application
+2. Set the callback URL to your Firebase Functions endpoint
+3. Configure the client ID in Firebase Functions secrets
+4. Use the OAuth flow to connect groups
+
+## 📁 Project Structure
+
+```
+├── functions/              # Firebase Functions
+│   ├── index.js           # Main functions file
+│   └── package.json       # Functions dependencies
+├── public/                # Static assets
+│   └── poster-template.png # QR poster template
+├── src/                   # React application
+│   ├── components/        # React components
+│   ├── lib/              # Utility libraries
+│   ├── app.jsx           # Main application component
+│   └── main.jsx          # Application entry point
+├── firebase.json         # Firebase configuration
+├── package.json          # Project dependencies
+└── vite.config.js        # Vite configuration
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is proprietary software. All rights reserved.
+
+## 🆘 Support
+
+For support and questions:
+- Create an issue in this repository
+- Contact the development team
+- Check the Firebase console for backend logs
+
+## 🔄 Version History
+
+- **v0.0.1** - Initial release with core QR generation and assistance features
+
+---
+
+**QRcallbox** - Transforming retail customer service through innovative QR code technology.

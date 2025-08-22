@@ -1,10 +1,9 @@
 // src/lib/api.js
-const API_BASE = import.meta.env.DEV
-  ? "https://qrwebaccdb.web.app"     // dev -> hit Firebase Hosting
-  : "";                               // prod -> same origin
+// Use the hosting rewrite URL
+const MINT_URL = "/api/mint";
 
 export async function mint(store, area) {
-  const res = await fetch(`${API_BASE}/api/mint`, {
+  const res = await fetch(MINT_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

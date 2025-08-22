@@ -9,6 +9,7 @@ import UnapprovedUsersList from "./UnapprovedUsersList.jsx";
 import InsightsAI from "./InsightsAI.jsx";
 import GroupMeSetup from "./GroupMeSetup.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
+import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
 import {
   getAuth,
   onAuthStateChanged,
@@ -83,16 +84,16 @@ export function useFirebase() {
 // -----------------------------
 function Card({ children, className = "" }) {
   return (
-    <div className={`bg-white rounded-2xl shadow-sm ring-1 ring-black/5 ${className}`}>
+    <div className={`bg-secondary rounded-2xl shadow-sm ring-1 ring-black/5 border border-themed ${className}`}>
       {children}
     </div>
   );
 }
 function CardHeader({ title, subtitle }) {
   return (
-    <div className="p-6 border-b border-gray-100">
-      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-      {subtitle ? <p className="text-sm text-gray-500 mt-1">{subtitle}</p> : null}
+    <div className="p-6 border-b border-themed">
+      <h2 className="text-xl font-semibold tracking-tight text-primary">{title}</h2>
+      {subtitle ? <p className="text-sm text-muted mt-1">{subtitle}</p> : null}
     </div>
   );
 }
@@ -111,9 +112,9 @@ function Input({
 }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-gray-700">{label}</span>
+      <span className="text-sm font-medium text-primary">{label}</span>
       <input
-        className="mt-1 w-full rounded-xl border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+        className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
         type={type}
         name={name}
         value={value}
@@ -127,15 +128,15 @@ function Input({
 }
 function Tabs({ tabs, current, onChange }) {
   return (
-    <div className="flex gap-2 flex-wrap">
+    <div className="flex gap-1 sm:gap-2 flex-wrap">
       {tabs.map((t) => (
         <button
           key={t}
           onClick={() => onChange(t)}
-          className={`px-3 py-1.5 text-sm rounded-xl border ${
+          className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm rounded-xl border ${
             current === t
-              ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-              : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
+              ? "bg-indigo-600 text-white border-indigo-500"
+              : "bg-tertiary text-primary border-themed hover:bg-secondary"
           }`}
         >
           {t}
@@ -185,7 +186,7 @@ function GenerateQR() {
       setBusy(true);
       setQrDataUrl("");
       const data = await mint(store.trim(), area.trim());
-      const shortUrl = `https://qrcallbox.com/s?t=${encodeURIComponent(data.token)}`;
+      const shortUrl = `${window.location.origin}/s?t=${encodeURIComponent(data.token)}`;
       const dataUrl = await QR.toDataURL(shortUrl, {
         width: 600,
         errorCorrectionLevel: "L",
@@ -240,13 +241,13 @@ function GenerateQR() {
 
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-2xl border p-4">
+      <div className="bg-secondary rounded-2xl border border-themed p-3 sm:p-4">
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="block">
-            <span className="text-sm text-gray-700">Store number</span>
+            <span className="text-sm text-primary">Store number</span>
             <input
-              className="mt-1 w-full rounded-xl border border-gray-300 bg-gray-50 px-3 py-2
-                         placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none
+              className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
+                         placeholder:text-muted focus:border-indigo-500 focus:outline-none
                          focus:ring-2 focus:ring-indigo-500"
               placeholder="e.g. 1458"
               value={store}
@@ -255,10 +256,10 @@ function GenerateQR() {
           </label>
 
           <label className="block sm:col-span-2">
-            <span className="text-sm text-gray-700">Area</span>
+            <span className="text-sm text-primary">Area</span>
             <input
-              className="mt-1 w-full rounded-xl border border-gray-300 bg-gray-50 px-3 py-2
-                         placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none
+              className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
+                         placeholder:text-muted focus:border-indigo-500 focus:outline-none
                          focus:ring-2 focus:ring-indigo-500"
               placeholder="e.g. Electronics"
               value={area}
@@ -269,31 +270,31 @@ function GenerateQR() {
 
         {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
 
-        <div className="mt-3 flex gap-2">
-          <Button onClick={generate} disabled={!ready}>
+        <div className="mt-3 flex flex-col sm:flex-row gap-2">
+          <Button onClick={generate} disabled={!ready} className="w-full sm:w-auto">
             {busy ? "Generating…" : "Generate QR"}
           </Button>
 
           <button
             onClick={downloadPng}
             disabled={!qrDataUrl}
-            className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold
-                       bg-gray-100 text-gray-900 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold
+                       bg-tertiary text-primary hover:bg-secondary disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
           >
             Download PNG
           </button>
 
           {qrDataUrl && (
-            <Button onClick={handlePrintPoster}>Print</Button>
+            <Button onClick={handlePrintPoster} className="w-full sm:w-auto">Print</Button>
           )}
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border p-6 grid place-items-center">
+      <div className="bg-secondary rounded-2xl border border-themed p-4 sm:p-6 grid place-items-center">
         {qrDataUrl ? (
           <PosterWithQR ref={posterRef} qrDataUrl={qrDataUrl} />
         ) : (
-          <div className="w-64 h-64 grid place-items-center text-gray-400 border rounded-xl">
+          <div className="w-48 h-48 sm:w-64 sm:h-64 grid place-items-center text-muted border border-themed rounded-xl">
             QR preview
           </div>
         )}
@@ -348,7 +349,7 @@ function SignInForm({ onSwitch }) {
           (error.includes("Please wait while your account is activated") ? (
             <div className="mb-3 text-center">
               <div className="text-2xl font-bold mb-2">Welcome!</div>
-              <div className="text-gray-700 mb-4">{error}</div>
+              <div className="text-red-600 mb-4">{error}</div>
             </div>
           ) : (
             <div className="mb-3 text-sm text-red-600 whitespace-pre-line">{error}</div>
@@ -358,7 +359,7 @@ function SignInForm({ onSwitch }) {
           <Input label="Password" type="password" value={password} onChange={(e)=>setPassword(e.target.value)} required autoComplete="current-password" />
           <div className="flex items-center justify-between">
             <Button type="submit" disabled={loading}>{loading ? "Signing in…" : "Sign in"}</Button>
-            <button type="button" onClick={onSwitch} className="text-sm text-indigo-700 hover:underline">
+            <button type="button" onClick={onSwitch} className="text-sm text-indigo-400 hover:text-indigo-300 hover:underline">
               Create an account
             </button>
           </div>
@@ -428,7 +429,7 @@ function RegisterForm({ onSwitch }) {
       <CardBody>
         {error && <div className="mb-3 text-sm text-red-600">{error}</div>}
         {success && <div className="mb-3 text-sm text-green-700">{success}</div>}
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
           <Input label="First name" value={form.firstName} onChange={updateField("firstName")} required autoComplete="given-name" />
           <Input label="Last name" value={form.lastName} onChange={updateField("lastName")} required autoComplete="family-name" />
           <Input label="Store number" value={form.storeNumber} onChange={updateField("storeNumber")} required />
@@ -438,20 +439,20 @@ function RegisterForm({ onSwitch }) {
           <Input label="Password" type="password" value={form.password} onChange={updateField("password")} required autoComplete="new-password" />
           <Input label="Confirm password" type="password" value={form.confirm} onChange={updateField("confirm")} required autoComplete="new-password" />
 
-          <div className="md:col-span-2 space-y-2 text-sm text-gray-600">
+          <div className="sm:col-span-2 space-y-2 text-sm text-secondary">
             <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${passwordOk ? "bg-emerald-500" : "bg-gray-300"}`} />
+              <span className={`h-2 w-2 rounded-full ${passwordOk ? "bg-emerald-500" : "bg-gray-600"}`} />
               <span>At least 8 chars, with a letter and a number</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${passwordsMatch ? "bg-emerald-500" : "bg-gray-300"}`} />
+              <span className={`h-2 w-2 rounded-full ${passwordsMatch ? "bg-emerald-500" : "bg-gray-600"}`} />
               <span>Passwords match</span>
             </div>
           </div>
 
-          <div className="md:col-span-2 flex items-center justify-between mt-2">
+          <div className="sm:col-span-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mt-2">
             <Button type="submit" disabled={loading}>{loading ? "Creating…" : "Create account"}</Button>
-            <button type="button" onClick={onSwitch} className="text-sm text-indigo-700 hover:underline">Have an account? Sign in</button>
+            <button type="button" onClick={onSwitch} className="text-sm text-indigo-400 hover:text-indigo-300 hover:underline">Have an account? Sign in</button>
           </div>
         </form>
       </CardBody>
@@ -463,12 +464,44 @@ function RegisterForm({ onSwitch }) {
 // 🧭 App Shell w/ Tabs (single definition)
 // -----------------------------
 function Settings({ user, onSignOut }) {
+  const { isDark, toggleTheme } = useTheme();
+  
   return (
-    <div className="space-y-3">
-      <div className="text-sm text-gray-600">
-        Signed in as <span className="font-medium">{user.displayName || user.email}</span>
+    <div className="space-y-6">
+      {/* Theme Settings */}
+      <div className="bg-secondary rounded-xl p-4 border border-themed">
+        <h3 className="text-lg font-semibold text-primary mb-3">Appearance</h3>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium text-primary">Theme</div>
+            <div className="text-sm text-muted">Choose between light and dark mode</div>
+          </div>
+          <button
+            onClick={toggleTheme}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 ${
+              isDark ? 'bg-indigo-600' : 'bg-gray-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                isDark ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+        <div className="mt-2 text-xs text-muted">
+          Current: {isDark ? 'Dark' : 'Light'} mode
+        </div>
       </div>
-      <Button onClick={onSignOut}>Sign out</Button>
+
+      {/* Account Settings */}
+      <div className="bg-secondary rounded-xl p-4 border border-themed">
+        <h3 className="text-lg font-semibold text-primary mb-3">Account</h3>
+        <div className="text-sm text-muted mb-3">
+          Signed in as <span className="font-medium text-primary">{user.displayName || user.email}</span>
+        </div>
+        <Button onClick={onSignOut}>Sign out</Button>
+      </div>
     </div>
   );
 }
@@ -476,17 +509,17 @@ function Settings({ user, onSignOut }) {
 function Dashboard() {
   return (
     <div className="grid md:grid-cols-3 gap-4">
-      <div className="rounded-xl border p-4">
-        <div className="text-sm text-gray-500">Active scanners</div>
-        <div className="mt-2 text-2xl font-semibold">—</div>
+      <div className="rounded-xl border border-themed bg-tertiary p-4">
+        <div className="text-sm text-muted">Active scanners</div>
+        <div className="mt-2 text-2xl font-semibold text-primary">—</div>
       </div>
-      <div className="rounded-xl border p-4">
-        <div className="text-sm text-gray-500">Requests today</div>
-        <div className="mt-2 text-2xl font-semibold">—</div>
+      <div className="rounded-xl border border-themed bg-tertiary p-4">
+        <div className="text-sm text-muted">Requests today</div>
+        <div className="mt-2 text-2xl font-semibold text-primary">—</div>
       </div>
-      <div className="rounded-xl border p-4">
-        <div className="text-sm text-gray-500">Avg. response time</div>
-        <div className="mt-2 text-2xl font-semibold">—</div>
+      <div className="rounded-xl border border-themed bg-tertiary p-4">
+        <div className="text-sm text-muted">Avg. response time</div>
+        <div className="mt-2 text-2xl font-semibold text-primary">—</div>
       </div>
     </div>
   );
@@ -522,11 +555,11 @@ function UserStatusSearch({ db }) {
   }
 
   return (
-    <div className="bg-gray-50 rounded-xl p-4 border max-w-lg">
+    <div className="bg-secondary rounded-xl p-4 border border-themed max-w-lg">
       <form onSubmit={handleSearch} className="flex gap-2 mb-2">
         <input
           type="email"
-          className="flex-1 rounded-xl border px-3 py-2 text-sm"
+          className="flex-1 rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
           placeholder="Search user by email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -538,7 +571,7 @@ function UserStatusSearch({ db }) {
       </form>
       {error && <div className="text-sm text-red-600 mb-2">{error}</div>}
       {result && (
-        <div className="text-sm bg-white rounded-xl border p-3">
+        <div className="text-sm bg-tertiary rounded-xl border border-themed p-3 text-primary">
           <div><strong>Name:</strong> {result.firstName} {result.lastName}</div>
           <div><strong>Email:</strong> {result.email}</div>
           <div><strong>Store:</strong> {result.storeNumber}</div>
@@ -758,10 +791,10 @@ function Shell({ user, onSignOut }) {
   // Gate for unapproved users
   if (userDoc && userDoc.approved === false && !isAdmin) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow p-8 text-center">
-          <div className="text-2xl font-bold mb-2">Welcome!</div>
-          <div className="text-gray-700 mb-4">
+      <div className="min-h-screen flex flex-col items-center justify-center bg-primary">
+        <div className="max-w-md w-full bg-secondary rounded-2xl shadow p-8 text-center">
+          <div className="text-2xl font-bold mb-2 text-primary">Welcome!</div>
+          <div className="text-secondary mb-4">
             Please wait while your account is activated.
             <br />
             You will receive access once approved by an administrator.
@@ -784,21 +817,34 @@ function Shell({ user, onSignOut }) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-10 backdrop-blur bg-white/90 border-b border-gray-100">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-indigo-600" />
-            <div>
-              <div className="text-lg font-semibold">QRcallbox</div>
-              <div className="text-xs text-gray-500">Real-time assistance via QR</div>
+    <div className="min-h-screen bg-primary">
+      <header className="sticky top-0 z-10 backdrop-blur bg-primary/90 border-b border-themed">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 py-3 sm:py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-xl bg-blue-600 flex items-center justify-center">
+                <svg viewBox="0 0 24 24" className="h-5 w-5 sm:h-6 sm:w-6 text-white fill-current">
+                  <path d="M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zM19 13h2v2h-2zM13 13h2v2h-2zM15 15h2v2h-2zM13 17h2v2h-2zM15 19h2v2h-2zM17 17h2v2h-2zM17 13h2v2h-2zM19 15h2v2h-2z"/>
+                </svg>
+              </div>
+              <div>
+                <div className="text-base sm:text-lg font-semibold text-primary">QRcallbox</div>
+                <div className="text-xs text-muted hidden sm:block">Real-time assistance via QR</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-xs sm:text-sm text-secondary truncate max-w-24 sm:max-w-none">
+                {user.displayName?.split(' ')[0] || user.email?.split('@')[0]}
+              </div>
+              <div className="text-xs text-muted hidden sm:block">
+                {user.displayName ? user.email?.split('@')[0] : ''}
+              </div>
             </div>
           </div>
-          <div className="text-sm text-gray-600 hidden md:block">{user.displayName || user.email}</div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6 space-y-4">
+      <main className="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-6 space-y-3 sm:space-y-4">
         <Card>
           <CardBody className="flex items-center justify-between gap-4 flex-wrap">
             <Tabs tabs={tabs} current={active} onChange={setActive} />
@@ -819,28 +865,28 @@ function Shell({ user, onSignOut }) {
             {/* Replace old subtitle with InsightsAI below */}
             <CardHeader title="Insights" subtitle={null} />
             <CardBody>
-              <div className="flex flex-col md:flex-row gap-4 mb-6 relative">
+              <div className="flex flex-col md:flex-row gap-3 sm:gap-4 mb-4 sm:mb-6 relative">
                 {/* Stores (scroll ~5 items) */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Select Store(s)</label>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Select Store(s)</label>
                   <button
                     type="button"
-                    className="rounded border px-2 py-1 text-left w-full bg-white hover:bg-gray-50 mb-1"
+                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
                     onClick={() => setShowStores(v => !v)}
                   >
                     {selectedStores.length ? `${selectedStores.length} selected` : "Choose store(s)"}
                   </button>
                   {showStores && (
                     <div
-                      className="flex flex-col gap-1 min-w-[180px] border rounded bg-white shadow p-2 z-10 absolute max-h-40 overflow-y-auto"
+                      className="flex flex-col gap-1 w-full sm:min-w-[180px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
                       onMouseLeave={() => setShowStores(false)}
                     >
-                      {stores.length === 0 && <div className="text-gray-400">No stores found</div>}
+                      {stores.length === 0 && <div className="text-muted">No stores found</div>}
                       {stores.map((store) => (
-                        <label key={store} className="flex items-center gap-2 cursor-pointer select-none">
+                        <label key={store} className="flex items-center gap-2 cursor-pointer select-none text-primary">
                           <input
                             type="checkbox"
-                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
                             checked={selectedStores.includes(store)}
                             onChange={() =>
                               setSelectedStores(prev =>
@@ -856,36 +902,36 @@ function Shell({ user, onSignOut }) {
                 </div>
 
                 {/* Areas (scroll, Select All) */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Select Area(s)</label>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Select Area(s)</label>
                   <button
                     type="button"
-                    className="rounded border px-2 py-1 text-left w-full bg-white hover:bg-gray-50 mb-1"
+                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
                     onClick={() => setShowAreas(v => !v)}
                   >
                     {selectedAreas.length ? `${selectedAreas.length} selected` : "Choose area(s)"}
                   </button>
                   {showAreas && (
                     <div
-                      className="flex flex-col gap-1 min-w-[180px] border rounded bg-white shadow p-2 z-10 absolute max-h-40 overflow-y-auto"
+                      className="flex flex-col gap-1 w-full sm:min-w-[180px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
                       onMouseLeave={() => setShowAreas(false)}
                     >
-                      <label className="flex items-center gap-2 cursor-pointer select-none sticky top-0 bg-white py-1 border-b">
+                      <label className="flex items-center gap-2 cursor-pointer select-none sticky top-0 bg-secondary py-1 border-b border-themed text-primary">
                         <input
                           type="checkbox"
-                          className="form-checkbox rounded h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+                          className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
                           checked={allAreasChecked}
                           onChange={toggleAllAreas}
                         />
                         <span className="font-medium">Select All</span>
                       </label>
 
-                      {filteredAreas.length === 0 && <div className="text-gray-400">No areas found</div>}
+                      {filteredAreas.length === 0 && <div className="text-muted">No areas found</div>}
                       {filteredAreas.map((area) => (
-                        <label key={area} className="flex items-center gap-2 cursor-pointer select-none">
+                        <label key={area} className="flex items-center gap-2 cursor-pointer select-none text-primary">
                           <input
                             type="checkbox"
-                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
                             checked={selectedAreas.includes(area)}
                             onChange={() =>
                               setSelectedAreas(prev =>
@@ -901,36 +947,36 @@ function Shell({ user, onSignOut }) {
                 </div>
 
                 {/* Weeks (scroll, Select All) */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Select Week(s)</label>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Select Week(s)</label>
                   <button
                     type="button"
-                    className="rounded border px-2 py-1 text-left w-full bg-white hover:bg-gray-50 mb-1"
+                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
                     onClick={() => setShowWeeks(v => !v)}
                   >
                     {selectedWeek.length ? `${selectedWeek.length} selected` : "Choose week(s)"}
                   </button>
                   {showWeeks && (
                     <div
-                      className="flex flex-col gap-1 min-w-[220px] border rounded bg-white shadow p-2 z-10 absolute max-h-40 overflow-y-auto"
+                      className="flex flex-col gap-1 w-full sm:min-w-[220px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
                       onMouseLeave={() => setShowWeeks(false)}
                     >
-                      <label className="flex items-center gap-2 cursor-pointer select-none sticky top-0 bg-white py-1 border-b">
+                      <label className="flex items-center gap-2 cursor-pointer select-none sticky top-0 bg-secondary py-1 border-b border-themed text-primary">
                         <input
                           type="checkbox"
-                          className="form-checkbox rounded h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+                          className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
                           checked={allWeeksChecked}
                           onChange={toggleAllWeeks}
                         />
                         <span className="font-medium">Select All</span>
                       </label>
 
-                      {filteredWeeks.length === 0 && <div className="text-gray-400">No weeks found</div>}
+                      {filteredWeeks.length === 0 && <div className="text-muted">No weeks found</div>}
                       {filteredWeeks.map((week) => (
-                        <label key={week} className="flex items-center gap-2 cursor-pointer select-none">
+                        <label key={week} className="flex items-center gap-2 cursor-pointer select-none text-primary">
                           <input
                             type="checkbox"
-                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
                             checked={selectedWeek.includes(week)}
                             onChange={() =>
                               setSelectedWeek(prev =>
@@ -956,7 +1002,7 @@ function Shell({ user, onSignOut }) {
 
               {/* Heatmap below (tooltips: add title attr inside Heatmap tiles if not already) */}
               {logsLoading ? (
-                <div className="flex items-center justify-center py-12 text-gray-400">Loading data…</div>
+                <div className="flex items-center justify-center py-12 text-muted">Loading data…</div>
               ) : (
                 <Heatmap
                   logs={filteredLogs}
@@ -997,7 +1043,7 @@ function Shell({ user, onSignOut }) {
           <Card>
             <CardHeader title="Admin" subtitle="Admin tools and controls" />
             <CardBody>
-              <div className="text-sm text-gray-600 mb-4">
+              <div className="text-sm text-secondary mb-4">
                 Welcome, admin user <span className="font-mono">sinaptick@gmail.com</span>.
               </div>
               <UnapprovedUsersList db={db} />
@@ -1016,20 +1062,24 @@ function Shell({ user, onSignOut }) {
 function Landing() {
   const [mode, setMode] = useState("signin");
   return (
-    <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white flex items-center justify-center p-6">
+    <div className="min-h-screen gradient-bg flex items-center justify-center p-6">
       <div className="absolute inset-x-0 top-0 p-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-indigo-600" />
-          <div className="text-lg font-semibold">QRcallbox</div>
+          <div className="h-9 w-9 rounded-xl bg-blue-600 flex items-center justify-center">
+            <svg viewBox="0 0 24 24" className="h-6 w-6 text-white fill-current">
+              <path d="M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zM19 13h2v2h-2zM13 13h2v2h-2zM15 15h2v2h-2zM13 17h2v2h-2zM15 19h2v2h-2zM17 17h2v2h-2zM17 13h2v2h-2zM19 15h2v2h-2z"/>
+            </svg>
+          </div>
+          <div className="text-lg font-semibold text-primary">QRcallbox</div>
         </div>
-        <div className="text-sm text-gray-600 hidden md:block">Scan • Notify • Assist</div>
+        <div className="text-sm text-secondary hidden md:block">Scan • Notify • Assist</div>
       </div>
       {mode === "signin" ? (
         <SignInForm onSwitch={() => setMode("register")} />
       ) : (
         <RegisterForm onSwitch={() => setMode("signin")} />
       )}
-      <footer className="absolute bottom-0 inset-x-0 p-6 text-center text-xs text-gray-500">
+      <footer className="absolute bottom-0 inset-x-0 p-6 text-center text-xs text-muted">
         © {new Date().getFullYear()} QRcallbox.com
       </footer>
     </div>
@@ -1055,7 +1105,7 @@ function AppInner() {
   if (loading) {
     return (
       <div className="min-h-screen grid place-items-center">
-        <div className="animate-pulse text-gray-500">Loading…</div>
+        <div className="animate-pulse text-muted">Loading…</div>
       </div>
     );
   }
@@ -1067,9 +1117,11 @@ function AppInner() {
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <AppInner />
-    </ErrorBoundary>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <AppInner />
+      </ErrorBoundary>
+    </ThemeProvider>
   );
 }
 

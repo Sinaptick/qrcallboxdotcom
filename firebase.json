@@ -9,6 +9,10 @@
     "rewrites": [
       { "source": "/api/mint", "function": { "functionId": "mint", "region": "us-central1" } },
       { "source": "/s",        "function": { "functionId": "s",    "region": "us-central1" } },
+      { "source": "/api/groupme/start", "function": { "functionId": "groupmeStart", "region": "us-central1" } },
+      { "source": "/api/groupme/callback", "function": { "functionId": "groupmeCallback", "region": "us-central1" } },
+      { "source": "/api/groupme/groups", "function": { "functionId": "groupmeGroups", "region": "us-central1" } },
+      { "source": "/api/groupme/createbot", "function": { "functionId": "groupmeCreateBot", "region": "us-central1" } },
       { "source": "**", "destination": "/index.html" }
     ],
     "headers": [

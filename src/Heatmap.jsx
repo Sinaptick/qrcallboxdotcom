@@ -168,7 +168,7 @@ export default function Heatmap({
   }
 
   if (loading) {
-    return <div className="flex items-center justify-center py-12 text-gray-400">Loading heatmap…</div>;
+    return <div className="flex items-center justify-center py-12 text-muted">Loading heatmap…</div>;
   }
 
   return (
@@ -178,13 +178,13 @@ export default function Heatmap({
         <div className="grid" style={{ gridTemplateColumns: `120px repeat(7, 1fr) 90px` }}>
           <div />{/* top-left corner empty */}
           {dayLabels.map((d) => (
-            <div key={d} className="text-xs font-medium text-gray-600 text-center py-2">{d}</div>
+            <div key={d} className="text-xs font-medium text-secondary text-center py-2">{d}</div>
           ))}
-          <div className="text-xs font-medium text-gray-600 text-center py-2">Total</div>
+          <div className="text-xs font-medium text-secondary text-center py-2">Total</div>
         </div>
 
         {/* Body rows */}
-        <div className="divide-y divide-gray-100">
+        <div className="divide-y divide-themed">
           {hours.map((h, rIdx) => (
             <div
               key={h}
@@ -192,7 +192,7 @@ export default function Heatmap({
               style={{ gridTemplateColumns: `120px repeat(7, 1fr) 90px` }}
             >
               {/* Time label */}
-              <div className="text-xs text-gray-600 py-2 pr-2">{fmtHour(h)}</div>
+              <div className="text-xs text-secondary py-2 pr-2">{fmtHour(h)}</div>
 
               {/* 7 day cells */}
               {matrix[rIdx].map((cell, cIdx) => {
@@ -221,7 +221,7 @@ export default function Heatmap({
               })}
 
               {/* Row total */}
-              <div className="text-xs text-gray-800 text-center">{rowTotals[rIdx] || "—"}</div>
+              <div className="text-xs text-primary text-center">{rowTotals[rIdx] || "—"}</div>
             </div>
           ))}
         </div>
