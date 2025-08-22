@@ -507,19 +507,104 @@ function Settings({ user, onSignOut }) {
 }
 
 function Dashboard() {
+  const { db } = useFirebase();
+  const [stats, setStats] = useState({
+    uniqueAreas: 0,
+    totalRequests: 0,
+    avgResponseTime: 0
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    
+    async function fetchDashboardStats() {
+      try {
+        const { getDocs, collection, query, where, Timestamp } = await import("firebase/firestore");
+        
+        // Get start and end of today
+        const today = new Date();
+        const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+        
+        // Convert to Firestore Timestamps
+        const startTimestamp = Timestamp.fromDate(startOfDay);
+        const endTimestamp = Timestamp.fromDate(endOfDay);
+        
+        // Query logs for today
+        const q = query(
+          collection(db, "logs"),
+          where("ts", ">=", startTimestamp),
+          where("ts", "<", endTimestamp)
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const todayLogs = querySnapshot.docs.map(doc => doc.data());
+        
+        if (!mounted) return;
+        
+        // Calculate unique areas scanned today
+        const uniqueAreas = new Set(todayLogs.map(log => log.area?.toLowerCase()?.trim()).filter(Boolean)).size;
+        
+        // Total requests today
+        const totalRequests = todayLogs.length;
+        
+        // Calculate average response time
+        const respondedLogs = todayLogs.filter(log => log.respondedAt && log.ts);
+        let avgResponseTime = 0;
+        
+        if (respondedLogs.length > 0) {
+          const totalResponseTime = respondedLogs.reduce((sum, log) => {
+            const requestTime = log.ts.toDate ? log.ts.toDate() : new Date(log.ts);
+            const responseTime = log.respondedAt.toDate ? log.respondedAt.toDate() : new Date(log.respondedAt);
+            const diff = responseTime - requestTime;
+            return sum + (diff / 60000); // Convert to minutes
+          }, 0);
+          avgResponseTime = Math.round(totalResponseTime / respondedLogs.length);
+        }
+        
+        setStats({
+          uniqueAreas,
+          totalRequests,
+          avgResponseTime
+        });
+        
+      } catch (error) {
+        console.error("Error fetching dashboard stats:", error);
+        if (mounted) {
+          setStats({ uniqueAreas: 0, totalRequests: 0, avgResponseTime: 0 });
+        }
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+
+    fetchDashboardStats();
+    return () => { mounted = false; };
+  }, [db]);
+
   return (
     <div className="grid md:grid-cols-3 gap-4">
       <div className="rounded-xl border border-themed bg-tertiary p-4">
-        <div className="text-sm text-muted">Active scanners</div>
-        <div className="mt-2 text-2xl font-semibold text-primary">—</div>
+        <div className="text-sm text-muted">Areas scanned today</div>
+        <div className="mt-2 text-2xl font-semibold text-primary">
+          {loading ? "—" : stats.uniqueAreas}
+        </div>
+        <div className="text-xs text-muted mt-1">unique locations</div>
       </div>
       <div className="rounded-xl border border-themed bg-tertiary p-4">
         <div className="text-sm text-muted">Requests today</div>
-        <div className="mt-2 text-2xl font-semibold text-primary">—</div>
+        <div className="mt-2 text-2xl font-semibold text-primary">
+          {loading ? "—" : stats.totalRequests}
+        </div>
+        <div className="text-xs text-muted mt-1">total scans</div>
       </div>
       <div className="rounded-xl border border-themed bg-tertiary p-4">
         <div className="text-sm text-muted">Avg. response time</div>
-        <div className="mt-2 text-2xl font-semibold text-primary">—</div>
+        <div className="mt-2 text-2xl font-semibold text-primary">
+          {loading ? "—" : stats.avgResponseTime > 0 ? `${stats.avgResponseTime}m` : "—"}
+        </div>
+        <div className="text-xs text-muted mt-1">minutes</div>
       </div>
     </div>
   );
@@ -630,8 +715,10 @@ function Shell({ user, onSignOut }) {
     setLogsLoading(true);
     (async () => {
       try {
+        console.log("Loading logs for insights...");
         const { getDocs, collection } = await import("firebase/firestore");
         const logsSnap = await getDocs(collection(db, "logs"));
+        console.log("Logs query returned:", logsSnap.docs.length, "documents");
         const logsArr = [];
         const storeSet = new Set();
         const weekMap = new Map();
@@ -1001,6 +1088,7 @@ function Shell({ user, onSignOut }) {
               />
 
               {/* Heatmap below (tooltips: add title attr inside Heatmap tiles if not already) */}
+              <div className="mt-6">
               {logsLoading ? (
                 <div className="flex items-center justify-center py-12 text-muted">Loading data…</div>
               ) : (
@@ -1012,6 +1100,7 @@ function Shell({ user, onSignOut }) {
                   selectedAreas={selectedAreas}
                 />
               )}
+              </div>
             </CardBody>
           </Card>
         )}

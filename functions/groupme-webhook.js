@@ -1,13 +1,6 @@
-import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
-
-// Initialize if not already done
-if (!getApps().length) {
-  initializeApp();
-}
-const db = getFirestore();
 
 // ===== GroupMe Webhook Handler =====
 export const groupmeWebhook = onRequest({
@@ -16,6 +9,8 @@ export const groupmeWebhook = onRequest({
   invoker: "public"
 }, async (req, res) => {
   try {
+    // Get Firestore instance
+    const db = getFirestore();
     if (req.method !== "POST") {
       return res.status(405).send("Use POST");
     }
@@ -65,6 +60,7 @@ async function isAssistanceResponse(payload) {
   // Check if there was a recent assistance request in this group
   const recentRequestTime = new Date(created_at * 1000 - 30 * 60 * 1000); // 30 minutes ago
   
+  const db = getFirestore();
   const recentLogs = await db.collection("logs")
     .where("ts", ">=", recentRequestTime)
     .orderBy("ts", "desc")
@@ -82,6 +78,8 @@ async function logAssistanceResponse(payload) {
   const { name, user_id, text, group_id, created_at } = payload;
   
   try {
+    const db = getFirestore();
+    
     // Find the most recent unresponded assistance request
     const recentLogs = await db.collection("logs")
       .where("ts", ">=", new Date(created_at * 1000 - 30 * 60 * 1000))
@@ -92,6 +90,12 @@ async function logAssistanceResponse(payload) {
 
     if (!recentLogs.empty) {
       const logDoc = recentLogs.docs[0];
+      const logData = logDoc.data();
+      
+      // Calculate response time in seconds
+      const requestTime = logData.ts.toDate ? logData.ts.toDate() : new Date(logData.ts);
+      const responseTime = new Date(created_at * 1000);
+      const responseTimeSeconds = Math.round((responseTime - requestTime) / 1000);
       
       // Update the log with response info
       await logDoc.ref.update({
@@ -99,14 +103,16 @@ async function logAssistanceResponse(payload) {
         responderName: name,
         responderUserId: user_id,
         responseText: text,
-        responseTime: new Date(created_at * 1000),
+        responseTime: responseTime,
+        responseTimeSeconds: responseTimeSeconds,
         groupId: group_id
       });
 
       logger.info("Logged assistance response", {
         logId: logDoc.id,
         responder: name,
-        responseText: text
+        responseText: text,
+        responseTimeSeconds: responseTimeSeconds
       });
     }
   } catch (e) {

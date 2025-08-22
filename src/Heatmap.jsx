@@ -86,30 +86,27 @@ export default function Heatmap({
   const filtered = useMemo(() => {
     if (!logs?.length) return [];
 
-    // ❗ Require Store AND Area AND Week to be selected
-    const mustHaveAll = Boolean(
-      (selectedStores && selectedStores.length) &&
-      (selectedAreas && selectedAreas.length) &&
-      (selectedWeek && selectedWeek.length)
-    );
-    if (!mustHaveAll) return [];
-
-    const storeSet = new Set(selectedStores.map(String));
-    const areaSet  = new Set(selectedAreas);
-    const weekSet  = new Set(selectedWeek);
-
     return logs.filter((l) => {
-      // store
-      if (!storeSet.has(String(l.store))) return false;
+      // store filter (if any selected)
+      if (selectedStores && selectedStores.length > 0) {
+        const storeSet = new Set(selectedStores.map(String));
+        if (!storeSet.has(String(l.store))) return false;
+      }
 
-      // area
-      if (!areaSet.has(l.area)) return false;
+      // area filter (if any selected)
+      if (selectedAreas && selectedAreas.length > 0) {
+        const areaSet = new Set(selectedAreas);
+        if (!areaSet.has(l.area)) return false;
+      }
 
-      // week
-      const d = toDate(l.ts);
-      if (!d) return false;
-      const label = weekLabelForDate(d);
-      if (!label || !weekSet.has(label)) return false;
+      // week filter (if any selected)
+      if (selectedWeek && selectedWeek.length > 0) {
+        const weekSet = new Set(selectedWeek);
+        const d = toDate(l.ts);
+        if (!d) return false;
+        const label = weekLabelForDate(d);
+        if (!label || !weekSet.has(label)) return false;
+      }
 
       return true;
     });
@@ -148,6 +145,16 @@ export default function Heatmap({
     () => matrix.map((row) => row.reduce((sum, c) => sum + c.total, 0)),
     [matrix]
   );
+  
+  const columnTotals = useMemo(() => {
+    const totals = new Array(dayLabels.length).fill(0);
+    matrix.forEach(row => {
+      row.forEach((cell, colIdx) => {
+        totals[colIdx] += cell.total;
+      });
+    });
+    return totals;
+  }, [matrix, dayLabels.length]);
   const globalMax = useMemo(
     () => Math.max(1, ...matrix.flat().map((c) => c.total)),
     [matrix]
@@ -157,6 +164,27 @@ export default function Heatmap({
   function cellBg(total) {
     const alpha = total === 0 ? 0 : Math.max(0.08, Math.min(1, total / globalMax));
     // Tailwind blue-500 rgb(59,130,246)
+    return `rgba(59,130,246,${alpha})`;
+  }
+
+  // Color functions for totals
+  const maxRowTotal = Math.max(1, ...rowTotals);
+  const maxColumnTotal = Math.max(1, ...columnTotals);
+  const grandTotal = rowTotals.reduce((sum, total) => sum + total, 0);
+
+  function rowTotalBg(total) {
+    const alpha = total === 0 ? 0.1 : Math.max(0.2, Math.min(1, total / maxRowTotal));
+    return `rgba(59,130,246,${alpha})`;
+  }
+
+  function columnTotalBg(total) {
+    const alpha = total === 0 ? 0.1 : Math.max(0.2, Math.min(1, total / maxColumnTotal));
+    return `rgba(59,130,246,${alpha})`;
+  }
+
+  function grandTotalBg(total) {
+    const maxTotal = Math.max(maxRowTotal, maxColumnTotal);
+    const alpha = total === 0 ? 0.1 : Math.max(0.3, Math.min(1, total / (maxTotal * 3))); // Scale for grand total
     return `rgba(59,130,246,${alpha})`;
   }
 
@@ -175,12 +203,13 @@ export default function Heatmap({
     <div className="w-full overflow-x-auto">
       <div className="inline-block min-w-full">
         {/* Header row */}
-        <div className="grid" style={{ gridTemplateColumns: `120px repeat(7, 1fr) 90px` }}>
+        <div className="grid gap-2" style={{ gridTemplateColumns: `120px repeat(7, 1fr) 20px 90px` }}>
           <div />{/* top-left corner empty */}
           {dayLabels.map((d) => (
-            <div key={d} className="text-xs font-medium text-secondary text-center py-2">{d}</div>
+            <div key={d} className="text-sm font-medium text-primary text-center py-2">{d}</div>
           ))}
-          <div className="text-xs font-medium text-secondary text-center py-2">Total</div>
+          <div />{/* gap before total */}
+          <div className="text-sm font-medium text-primary text-center py-2">Total</div>
         </div>
 
         {/* Body rows */}
@@ -188,8 +217,8 @@ export default function Heatmap({
           {hours.map((h, rIdx) => (
             <div
               key={h}
-              className="grid items-center"
-              style={{ gridTemplateColumns: `120px repeat(7, 1fr) 90px` }}
+              className="grid items-center gap-2"
+              style={{ gridTemplateColumns: `120px repeat(7, 1fr) 20px 90px` }}
             >
               {/* Time label */}
               <div className="text-xs text-secondary py-2 pr-2">{fmtHour(h)}</div>
@@ -220,10 +249,40 @@ export default function Heatmap({
                 );
               })}
 
+              <div />{/* gap before total */}
               {/* Row total */}
-              <div className="text-xs text-primary text-center">{rowTotals[rIdx] || "—"}</div>
+              <div 
+                className="text-sm font-bold text-white rounded-lg text-center py-2 shadow-sm h-8 flex items-center justify-center"
+                style={{ backgroundColor: rowTotalBg(rowTotals[rIdx] || 0) }}
+              >
+                {rowTotals[rIdx] || ""}
+              </div>
             </div>
           ))}
+        </div>
+        
+        {/* Gap before footer totals */}
+        <div className="mt-4">
+          {/* Footer row with column totals */}
+          <div className="grid gap-2" style={{ gridTemplateColumns: `120px repeat(7, 1fr) 20px 90px` }}>
+            <div className="text-sm font-medium text-primary text-center py-2">Total</div>
+            {columnTotals.map((total, idx) => (
+              <div 
+                key={idx} 
+                className="text-sm font-bold text-white rounded-lg text-center py-2 shadow-sm"
+                style={{ backgroundColor: columnTotalBg(total || 0) }}
+              >
+                {total || ""}
+              </div>
+            ))}
+            <div />{/* gap before grand total */}
+            <div 
+              className="text-sm font-bold text-white rounded-lg text-center py-2 shadow-sm"
+              style={{ backgroundColor: grandTotalBg(grandTotal) }}
+            >
+              {grandTotal || ""}
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -120,8 +120,11 @@ export const groupmeStart = onRequest(
       const state = req.query.state ? sanitizeInput(String(req.query.state), 50) : "";
       const clientId = GROUPME_CLIENT_ID.value().trim();
 
-      // Try GroupMe's simplest OAuth format
-      const authorizeUrl = `https://oauth.groupme.com/oauth/authorize?client_id=${encodeURIComponent(clientId)}`;
+      const authorizeUrl =
+        "https://oauth.groupme.com/oauth/authorize" +
+        `?client_id=${encodeURIComponent(clientId)}` +
+        `&redirect_uri=${encodeURIComponent(BASE_CALLBACK)}` +
+        (state ? `&state=${encodeURIComponent(state)}` : "");
 
       res.redirect(authorizeUrl);
     } catch (e) {
@@ -131,28 +134,93 @@ export const groupmeStart = onRequest(
   }
 );
 
-// ===== 2) OAuth callback: handle implicit flow access_token =====
+// ===== 2) OAuth callback: exchange code for access_token =====
 export const groupmeCallback = onRequest(
   { 
     region: REGION, 
+    secrets: [GROUPME_CLIENT_ID],
     cors: { origin: ALLOWED_ORIGINS },
     invoker: "public"
   },
   async (req, res) => {
     try {
-      logger.info("GroupMe callback received", { query: req.query });
+      logger.info("GroupMe callback received");
       
-      // GroupMe implicit flow returns token in URL fragment, handle with client-side JS
+      const code = requiredQuery(req, "code");
       const state = req.query.state ? sanitizeInput(String(req.query.state), 50) : "";
-      
-      logger.info("Rendering callback page to handle implicit flow");
+      const clientId = GROUPME_CLIENT_ID.value().trim();
 
-      // Send HTML page that handles implicit flow client-side
+      logger.info("Starting OAuth token exchange");
+
+      // GroupMe token exchange - try both POST and GET methods
+      const tokenParams = {
+        client_id: clientId,
+        redirect_uri: BASE_CALLBACK,
+        code
+      };
+
+      // First try POST with form data
+      let resp = await fetch("https://api.groupme.com/oauth/token", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "application/json",
+          "User-Agent": "QRcallbox/1.0"
+        },
+        body: new URLSearchParams(tokenParams).toString()
+      });
+
+      // If POST fails with 500, try GET method (some OAuth providers prefer GET)
+      if (!resp.ok && resp.status === 500) {
+        logger.info("POST failed, trying GET method");
+        const tokenUrl = `https://api.groupme.com/oauth/token?${new URLSearchParams(tokenParams).toString()}`;
+        resp = await fetch(tokenUrl, {
+          method: "GET",
+          headers: { 
+            "Accept": "application/json",
+            "User-Agent": "QRcallbox/1.0"
+          }
+        });
+      }
+
+      const responseText = await resp.text();
+      
+      logger.info("GroupMe API response status:", resp.status);
+
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        logger.info("Successfully parsed JSON response");
+      } catch (parseError) {
+        logger.error("Failed to parse GroupMe response as JSON");
+        return res.status(400).send("Invalid response from GroupMe API");
+      }
+
+      if (!resp.ok || !data?.access_token) {
+        logger.error("OAuth exchange failed");
+        return res.status(400).send("OAuth exchange failed");
+      }
+
+      const { access_token, user_id } = data;
+
+      // Save per-user token (key how you like; here by GroupMe user_id)
+      await db.collection("groupme_tokens").doc(String(user_id)).set(
+        {
+          access_token,
+          user_id: String(user_id),
+          firebase_uid: state || null, // Link to Firebase user
+          state: state || null,
+          updatedAt: FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+
+      // Send the user back to your app with success notification
       res.send(`
         <!DOCTYPE html>
         <html>
           <head>
-            <title>GroupMe OAuth</title>
+            <title>GroupMe Connected</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
               body { 
@@ -178,99 +246,22 @@ export const groupmeCallback = onRequest(
               h1 { color: #2563eb; margin-bottom: 1rem; }
               p { margin-bottom: 1rem; line-height: 1.6; }
               .success { color: #059669; font-weight: 600; }
-              .error { color: #dc2626; font-weight: 600; }
-              .loading { color: #f59e0b; font-weight: 600; }
             </style>
+            <script>
+              // Store the GroupMe user ID for the frontend to use
+              if (window.opener && "${sanitizeInput(state, 50)}") {
+                window.opener.localStorage.setItem("groupme_user_id_${sanitizeInput(state, 50)}", "${sanitizeInput(String(user_id), 20)}");
+                setTimeout(() => window.close(), 2000);
+              }
+            </script>
           </head>
           <body>
             <div class="container">
-              <h1 id="title">🔄 Processing...</h1>
-              <p id="message" class="loading">Connecting your GroupMe account...</p>
+              <h1>✅ GroupMe Connected!</h1>
+              <p class="success">Your GroupMe account has been successfully connected.</p>
+              <p>You can now close this window and return to the app to complete your bot setup.</p>
+              <p><small>This window will close automatically in 2 seconds.</small></p>
             </div>
-            
-            <script>
-              async function handleOAuth() {
-                try {
-                  // Debug: Log what we received
-                  console.log('Full URL:', window.location.href);
-                  console.log('Hash fragment:', window.location.hash);
-                  console.log('Query string:', window.location.search);
-                  
-                  // Check both fragment and query parameters
-                  const fragment = window.location.hash.substring(1);
-                  const query = window.location.search.substring(1);
-                  const fragmentParams = new URLSearchParams(fragment);
-                  const queryParams = new URLSearchParams(query);
-                  
-                  let accessToken = fragmentParams.get('access_token') || queryParams.get('access_token');
-                  const state = "${sanitizeInput(state, 50)}";
-                  
-                  // Debug output
-                  document.getElementById('message').innerHTML = \`
-                    <div style="text-align: left; font-size: 12px; background: #f0f0f0; padding: 1rem; border-radius: 0.5rem; margin: 1rem 0;">
-                      <strong>Debug Info:</strong><br>
-                      Fragment: \${fragment}<br>
-                      Query: \${query}<br>
-                      Access Token: \${accessToken || 'NOT FOUND'}
-                    </div>
-                  \`;
-                  
-                  if (!accessToken) {
-                    throw new Error('No access token received. Check debug info above.');
-                  }
-                  
-                  // Validate token and get user info
-                  const response = await fetch(\`https://api.groupme.com/v3/users/me?token=\${encodeURIComponent(accessToken)}\`);
-                  
-                  if (!response.ok) {
-                    throw new Error('Failed to validate token');
-                  }
-                  
-                  const userData = await response.json();
-                  const userId = userData.response?.id;
-                  
-                  if (!userId) {
-                    throw new Error('Failed to get user information');
-                  }
-                  
-                  // Store token in Firestore via our backend
-                  const storeResponse = await fetch('/api/groupme/store-token', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                      access_token: accessToken,
-                      user_id: userId,
-                      state: state
-                    })
-                  });
-                  
-                  if (!storeResponse.ok) {
-                    throw new Error('Failed to store token');
-                  }
-                  
-                  // Success!
-                  document.getElementById('title').textContent = '✅ GroupMe Connected!';
-                  document.getElementById('message').innerHTML = '<span class="success">Your GroupMe account has been successfully connected.</span><br>You can now close this window and return to the app.';
-                  
-                  // Notify parent window
-                  if (window.opener && state) {
-                    window.opener.localStorage.setItem(\`groupme_user_id_\${state}\`, userId);
-                    window.opener.postMessage({ type: 'groupme_connected', userId, state }, '*');
-                    setTimeout(() => window.close(), 2000);
-                  }
-                  
-                } catch (error) {
-                  console.error('OAuth error:', error);
-                  document.getElementById('title').textContent = '❌ Connection Failed';
-                  document.getElementById('message').innerHTML = \`<span class="error">Failed to connect GroupMe: \${error.message}</span><br>Please try again.\`;
-                }
-              }
-              
-              // Start OAuth handling
-              handleOAuth();
-            </script>
           </body>
         </html>
       `);
@@ -281,47 +272,7 @@ export const groupmeCallback = onRequest(
   }
 );
 
-// ===== 3) Store token endpoint for implicit flow =====
-export const groupmeStoreToken = onRequest({ 
-  region: REGION,
-  cors: { origin: ALLOWED_ORIGINS },
-  invoker: "public"
-}, async (req, res) => {
-  try {
-    if (req.method !== "POST") return res.status(405).send("Use POST");
-    
-    const { access_token, user_id, state } = req.body;
-    
-    if (!access_token || !user_id) {
-      return res.status(400).send("Missing access_token or user_id");
-    }
-    
-    // Sanitize inputs
-    const sanitizedUserId = sanitizeInput(String(user_id), 20);
-    const sanitizedState = state ? sanitizeInput(String(state), 50) : null;
-    
-    // Store the token
-    await db.collection("groupme_tokens").doc(sanitizedUserId).set(
-      {
-        access_token,
-        user_id: sanitizedUserId,
-        firebase_uid: sanitizedState || null,
-        state: sanitizedState || null,
-        updatedAt: FieldValue.serverTimestamp()
-      },
-      { merge: true }
-    );
-    
-    logger.info("GroupMe token stored", { userId: sanitizedUserId });
-    res.json({ success: true });
-    
-  } catch (e) {
-    logger.error("Store token error:", e.message);
-    res.status(500).send("Error storing token");
-  }
-});
-
-// ===== 4) List groups using stored token =====
+// ===== 3) List groups using stored token =====
 export const groupmeGroups = onRequest({ 
   region: REGION,
   cors: { origin: ALLOWED_ORIGINS },
@@ -389,55 +340,29 @@ export const groupmeCreateBot = onRequest({
     }
     
     // Authenticate user
-    logger.info("Authenticating user...");
     const decodedToken = await authenticateUser(req);
-    logger.info("User authenticated", { uid: decodedToken.uid });
     
-    const { user_id, group_id, name } = req.body || {};
-    logger.info("Bot creation request", { user_id, group_id, name });
+    const { user_id, group_id, name } = await req.json().catch(() => req.body || {});
     if (!user_id || !group_id) return res.status(400).send("Missing user_id or group_id");
     
     // Sanitize inputs
-    const sanitizedName = sanitizeInput(name || "CallBot", 50);
+    const sanitizedName = sanitizeInput(name || "QRcallbox Bot", 50);
     const sanitizedGroupId = sanitizeInput(String(group_id), 20);
-    logger.info("Sanitized inputs", { sanitizedName, sanitizedGroupId });
     
     // Verify user owns this GroupMe account
-    logger.info("Looking up GroupMe token", { user_id });
     const userTokenDoc = await db.collection("groupme_tokens").doc(String(user_id)).get();
     if (!userTokenDoc.exists) {
-      logger.error("No GroupMe token found", { user_id });
       return res.status(404).send("No token on file");
     }
     
     const tokenData = userTokenDoc.data();
-    logger.info("Token data found", { 
-      firebase_uid: tokenData.firebase_uid,
-      decodedUid: decodedToken.uid,
-      hasAccessToken: !!tokenData.access_token
-    });
-    
     if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
-      logger.error("Access denied", { 
-        tokenFirebaseUid: tokenData.firebase_uid,
-        decodedUid: decodedToken.uid
-      });
       return res.status(403).send("Access denied");
     }
 
     const { access_token } = tokenData;
-    logger.info("Using access token", { hasToken: !!access_token });
 
     const callbackUrl = "https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook";
-    const botRequest = {
-      bot: {
-        name: sanitizedName,
-        group_id: sanitizedGroupId,
-        callback_url: callbackUrl
-      }
-    };
-    
-    logger.info("Calling GroupMe API", { botRequest });
 
     const resp = await fetch("https://api.groupme.com/v3/bots", {
       method: "POST",
@@ -445,16 +370,19 @@ export const groupmeCreateBot = onRequest({
         "Content-Type": "application/json",
         "X-Access-Token": access_token
       },
-      body: JSON.stringify(botRequest)
+      body: JSON.stringify({
+        bot: {
+          name: sanitizedName,
+          group_id: sanitizedGroupId,
+          callback_url: callbackUrl
+        }
+      })
     });
 
-    logger.info("GroupMe API response", { status: resp.status, statusText: resp.statusText });
     const json = await resp.json();
-    logger.info("GroupMe API response body", { json });
-    
     if (!resp.ok) {
-      logger.error("Create bot failed", { status: resp.status, json });
-      return res.status(400).send(`Failed to create bot: ${JSON.stringify(json)}`);
+      logger.error("Create bot failed");
+      return res.status(400).send("Failed to create bot");
     }
 
     // Store bot information for later use
@@ -470,12 +398,11 @@ export const groupmeCreateBot = onRequest({
 
     res.json(json);
   } catch (e) {
-    logger.error("Create bot error:", e.message, e.stack);
+    logger.error("Create bot error:", e.message);
     if (e.message.includes('Invalid authentication')) {
       return res.status(401).send("Authentication required");
     }
-    // More specific error message for debugging
-    res.status(500).send(`Error creating bot: ${e.message}`);
+    res.status(500).send("Error creating bot");
   }
 });
 

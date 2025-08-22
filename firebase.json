@@ -1,4 +1,8 @@
 {
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
   "hosting": {
     "public": "dist",
     "ignore": [
@@ -11,17 +15,23 @@
       { "source": "/s",        "function": { "functionId": "s",    "region": "us-central1" } },
       { "source": "/api/groupme/start", "function": { "functionId": "groupmeStart", "region": "us-central1" } },
       { "source": "/api/groupme/callback", "function": { "functionId": "groupmeCallback", "region": "us-central1" } },
+      { "source": "/api/groupme/store-token", "function": { "functionId": "groupmeStoreToken", "region": "us-central1" } },
       { "source": "/api/groupme/groups", "function": { "functionId": "groupmeGroups", "region": "us-central1" } },
       { "source": "/api/groupme/createbot", "function": { "functionId": "groupmeCreateBot", "region": "us-central1" } },
+      { "source": "/api/groupme/webhook", "function": { "functionId": "groupmeWebhook", "region": "us-central1" } },
       { "source": "**", "destination": "/index.html" }
     ],
     "headers": [
       {
         "source": "/api/**",
         "headers": [
-          { "key": "Access-Control-Allow-Origin",  "value": "*" },
+          { "key": "Access-Control-Allow-Origin",  "value": "https://qrwebaccdb.web.app https://qrwebaccdb.firebaseapp.com http://localhost:5173 http://localhost:4173" },
           { "key": "Access-Control-Allow-Methods", "value": "GET,POST,OPTIONS" },
-          { "key": "Access-Control-Allow-Headers", "value": "Content-Type, X-API-Key" }
+          { "key": "Access-Control-Allow-Headers", "value": "Content-Type, X-API-Key, Authorization" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "X-Frame-Options", "value": "DENY" },
+          { "key": "X-XSS-Protection", "value": "1; mode=block" },
+          { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
         ]
       }
     ]

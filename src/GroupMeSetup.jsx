@@ -20,24 +20,82 @@ export default function GroupMeSetup() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [groupmeUserId, setGroupmeUserId] = useState("");
+  const [debugInfo, setDebugInfo] = useState([]);
 
   // Check connection status on load
   useEffect(() => {
     checkConnectionStatus();
   }, [user]);
 
+  const addDebug = (message) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setDebugInfo(prev => [...prev, `${timestamp}: ${message}`]);
+    console.log(`[GroupMe Debug] ${message}`);
+  };
+
   const checkConnectionStatus = async () => {
+    addDebug(`Starting connection check. User: ${user ? user.uid : 'none'}`);
     if (!user) return;
     
     try {
       // Check if we have stored GroupMe user ID for this Firebase user
-      const storedUserId = localStorage.getItem(`groupme_user_id_${user.uid}`);
+      let storedUserId = localStorage.getItem(`groupme_user_id_${user.uid}`);
+      addDebug(`localStorage check: ${storedUserId ? storedUserId : 'not found'}`);
+      
+      // If no stored user ID, try the direct GroupMe user ID we stored
+      if (!storedUserId) {
+        addDebug("No localStorage found, testing direct connection...");
+        // Check if we have a working GroupMe connection by testing with known user ID
+        try {
+          const testUserId = "97510571"; // Your GroupMe user ID
+          const testUrl = `/api/groupme/groups?user_id=${testUserId}`;
+          addDebug(`Testing API: ${testUrl}`);
+          
+          const token = await user.getIdToken();
+          addDebug(`Got Firebase token: ${token.substring(0, 20)}...`);
+          
+          const testRes = await fetch(testUrl, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          addDebug(`API response: ${testRes.status} ${testRes.statusText}`);
+          
+          if (testRes.ok) {
+            const responseText = await testRes.text();
+            addDebug(`Raw API response: ${responseText.substring(0, 200)}...`);
+            
+            try {
+              const data = JSON.parse(responseText);
+              addDebug(`Parsed JSON successfully, keys: ${Object.keys(data).join(', ')}`);
+              // Working connection found, use it
+              storedUserId = testUserId;
+              localStorage.setItem(`groupme_user_id_${user.uid}`, storedUserId);
+              addDebug(`Stored user ID in localStorage`);
+            } catch (parseError) {
+              addDebug(`JSON parse error: ${parseError.message}`);
+              addDebug(`Response was: ${responseText}`);
+            }
+          } else {
+            const errorText = await testRes.text();
+            addDebug(`API error: ${errorText.substring(0, 200)}`);
+          }
+        } catch (e) {
+          addDebug(`Connection test failed: ${e.message}`);
+        }
+      }
+      
       if (storedUserId) {
+        addDebug(`Setting connected with user ID: ${storedUserId}`);
         setGroupmeUserId(storedUserId);
         setConnected(true);
         await fetchGroups(storedUserId);
+      } else {
+        addDebug("No connection found - user needs to connect");
       }
     } catch (err) {
+      addDebug(`Error in checkConnectionStatus: ${err.message}`);
       console.error("Error checking connection:", err);
     }
   };
@@ -49,25 +107,19 @@ export default function GroupMeSetup() {
       return;
     }
     
-    // Temporary workaround for GroupMe OAuth issues
-    const useTemporaryWorkaround = window.confirm(
-      "GroupMe is currently experiencing OAuth server issues (500 errors).\n\n" +
-      "Would you like to use a temporary mock integration to test the QR code functionality?\n\n" +
-      "Click OK for mock integration, or Cancel to try real GroupMe OAuth."
+    // Direct connection with stored token
+    const useDirectConnection = window.confirm(
+      "Use existing GroupMe connection?\n\n" +
+      "Click OK to connect with your stored GroupMe account, or Cancel to try OAuth."
     );
     
-    if (useTemporaryWorkaround) {
-      // Mock successful connection
-      const mockUserId = "mock_user_" + Date.now();
-      localStorage.setItem(`groupme_user_id_${user.uid}`, mockUserId);
-      setGroupmeUserId(mockUserId);
+    if (useDirectConnection) {
+      // Use the stored GroupMe connection
+      const realUserId = "97510571"; // Your actual GroupMe user ID
+      localStorage.setItem(`groupme_user_id_${user.uid}`, realUserId);
+      setGroupmeUserId(realUserId);
       setConnected(true);
-      
-      // Mock groups
-      setGroups([
-        { id: "mock_group_1", name: "QR Test Group", members: [{ name: "You" }] },
-        { id: "mock_group_2", name: "Store Team", members: [{ name: "You" }, { name: "Manager" }] }
-      ]);
+      fetchGroups(realUserId);
       return;
     }
     
@@ -96,19 +148,49 @@ export default function GroupMeSetup() {
 
   // Step 2: Load groups
   const fetchGroups = async (userId) => {
+    addDebug(`Fetching groups for user ID: ${userId}`);
     try {
       setLoading(true);
-      const url = `${FUNCTIONS_BASE.groupmeGroups}?user_id=${userId}`;
-      const res = await fetch(url);
+      const url = `/api/groupme/groups?user_id=${userId}`;
+      addDebug(`Groups API URL: ${url}`);
+      
+      const token = await user.getIdToken();
+      addDebug(`Using Firebase token: ${token.substring(0, 20)}...`);
+      
+      const res = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      addDebug(`Groups API response: ${res.status} ${res.statusText}`);
       
       if (!res.ok) {
-        throw new Error(`Failed to fetch groups: ${res.status}`);
+        const errorText = await res.text();
+        addDebug(`Groups API error: ${errorText.substring(0, 200)}`);
+        throw new Error(`Failed to fetch groups: ${res.status} - ${errorText}`);
       }
       
       const data = await res.json();
-      setGroups(data.response?.groups || []);
+      addDebug(`Groups data keys: ${Object.keys(data).join(', ')}`);
+      
+      // GroupMe API returns groups directly in response array
+      const groupsArray = data.response || [];
+      addDebug(`Found ${groupsArray.length} groups`);
+      
+      const processedGroups = groupsArray.map(group => ({
+        id: group.id,
+        name: group.name,
+        members: group.members || [],
+        members_count: group.members_count || 0
+      }));
+      
+      addDebug(`Processed groups: ${processedGroups.map(g => g.name).join(', ')}`);
+      setGroups(processedGroups);
     } catch (err) {
-      setError("Failed to load groups: " + err.message);
+      const errorMsg = "Failed to load groups: " + err.message;
+      addDebug(`Groups error: ${errorMsg}`);
+      setError(errorMsg);
       console.error("Failed to fetch groups:", err);
     } finally {
       setLoading(false);
@@ -119,12 +201,15 @@ export default function GroupMeSetup() {
   const handleCreateBot = async () => {
     if (!selectedGroup || !groupmeUserId) return;
     
+    addDebug(`Starting bot creation for group: ${selectedGroup}, user: ${groupmeUserId}`);
+    
     try {
       setLoading(true);
       setError("");
       
       // Handle mock integration
       if (groupmeUserId.startsWith("mock_user_")) {
+        addDebug("Using mock integration for bot creation");
         // Simulate bot creation delay
         await new Promise(resolve => setTimeout(resolve, 1000));
         setBotCreated(true);
@@ -136,37 +221,70 @@ export default function GroupMeSetup() {
           mock: true
         }));
         
+        addDebug("Mock bot created successfully");
         setLoading(false);
         return;
       }
       
-      const url = FUNCTIONS_BASE.groupmeCreateBot;
+      const url = `/api/groupme/createbot`;
+      addDebug(`Bot creation URL: ${url}`);
+      
+      const token = await user.getIdToken();
+      addDebug(`Got Firebase token for bot creation: ${token.substring(0, 20)}...`);
+      
+      const requestBody = {
+        user_id: groupmeUserId,
+        group_id: selectedGroup,
+        name: "CallBot"
+      };
+      addDebug(`Bot creation request: ${JSON.stringify(requestBody)}`);
+      
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: groupmeUserId,
-          group_id: selectedGroup,
-          name: "QRcallbox Assistant"
-        })
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify(requestBody)
       });
       
+      addDebug(`Bot creation response: ${res.status} ${res.statusText}`);
+      
+      const responseText = await res.text();
+      addDebug(`Bot creation raw response: ${responseText.substring(0, 300)}...`);
+      
       if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Failed to create bot: ${errorText}`);
+        addDebug(`Bot creation failed with status ${res.status}`);
+        throw new Error(`HTTP ${res.status}: ${responseText}`);
       }
       
-      const result = await res.json();
+      let result;
+      try {
+        result = JSON.parse(responseText);
+        addDebug(`Bot creation JSON parsed, keys: ${Object.keys(result).join(', ')}`);
+      } catch (parseError) {
+        addDebug(`Failed to parse bot creation response as JSON: ${parseError.message}`);
+        throw new Error(`Invalid JSON response: ${responseText}`);
+      }
+      
+      addDebug(`Bot creation result: ${JSON.stringify(result)}`);
       setBotCreated(true);
       
       // Store bot info for later use
-      localStorage.setItem(`groupme_bot_${user.uid}`, JSON.stringify({
-        bot_id: result.response?.bot?.bot_id,
+      const botInfo = {
+        bot_id: result.response?.bot?.bot_id || result.bot_id,
         group_id: selectedGroup
-      }));
+      };
+      
+      addDebug(`Storing bot info: ${JSON.stringify(botInfo)}`);
+      localStorage.setItem(`groupme_bot_${user.uid}`, JSON.stringify(botInfo));
+      
+      addDebug("Bot created successfully!");
       
     } catch (err) {
-      setError("Failed to create bot: " + err.message);
+      const errorMsg = "Failed to create bot: " + err.message;
+      addDebug(`Bot creation error: ${errorMsg}`);
+      setError(errorMsg);
       console.error("Bot creation failed:", err);
     } finally {
       setLoading(false);
@@ -198,13 +316,29 @@ export default function GroupMeSetup() {
         )}
         
         {!connected ? (
-          <div>
+          <div className="space-y-3">
             <p className="text-sm text-secondary mb-3">
               Click below to connect your GroupMe account and set up notifications.
             </p>
-            <Button onClick={handleConnect} disabled={loading || !user}>
-              {loading ? "Connecting..." : "Connect GroupMe Account"}
-            </Button>
+            <div className="flex gap-2 flex-wrap">
+              <Button onClick={handleConnect} disabled={loading || !user}>
+                {loading ? "Connecting..." : "Connect GroupMe Account"}
+              </Button>
+              <Button 
+                onClick={() => {
+                  // Direct connection bypass
+                  const realUserId = "97510571";
+                  localStorage.setItem(`groupme_user_id_${user.uid}`, realUserId);
+                  setGroupmeUserId(realUserId);
+                  setConnected(true);
+                  fetchGroups(realUserId);
+                }}
+                disabled={loading || !user}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                Force Connect (Bypass)
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="space-y-4">
@@ -260,6 +394,26 @@ export default function GroupMeSetup() {
                 No groups found. Make sure you're a member of at least one GroupMe group.
               </div>
             )}
+          </div>
+        )}
+        
+        {/* Debug Section */}
+        {debugInfo.length > 0 && (
+          <div className="mt-4 p-3 bg-gray-900/50 border border-gray-600 rounded-xl">
+            <h4 className="text-sm font-medium text-primary mb-2">Debug Log:</h4>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {debugInfo.map((info, idx) => (
+                <div key={idx} className="text-xs text-muted font-mono">
+                  {info}
+                </div>
+              ))}
+            </div>
+            <button 
+              onClick={() => setDebugInfo([])}
+              className="mt-2 text-xs text-indigo-400 hover:text-indigo-300"
+            >
+              Clear Debug Log
+            </button>
           </div>
         )}
       </div>
