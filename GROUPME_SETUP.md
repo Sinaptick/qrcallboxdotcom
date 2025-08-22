@@ -1,6 +1,6 @@
 # GroupMe Integration Setup Guide
 
-## 🚀 Quick Setup Steps
+##  Quick Setup Steps
 
 ### 1. Create GroupMe Application
 
@@ -45,7 +45,7 @@ firebase deploy --only functions
 4. Select a group and create a bot
 5. Generate a QR code and test scanning it
 
-## 🔧 Configuration Details
+##  Configuration Details
 
 ### Frontend Environment Variables (Optional)
 
@@ -107,7 +107,7 @@ firebase emulators:start
 # http://localhost:5001/qrwebaccdb/us-central1/groupmeStart
 ```
 
-## 📱 How It Works
+##  How It Works
 
 1. **OAuth Flow**: User clicks "Connect GroupMe" → redirected to GroupMe OAuth → callback stores token
 2. **Group Selection**: App fetches user's groups using stored token
@@ -115,7 +115,7 @@ firebase emulators:start
 4. **QR Generation**: Creates unique tokens linked to store/area
 5. **Notification**: When QR is scanned → message sent to GroupMe group
 
-## 🔐 Security Notes
+##  Security Notes
 
 - GroupMe tokens are stored securely in Firestore
 - Each QR token is unique and tracked

@@ -25,7 +25,7 @@
       {
         "source": "/api/**",
         "headers": [
-          { "key": "Access-Control-Allow-Origin",  "value": "https://qrwebaccdb.web.app https://qrwebaccdb.firebaseapp.com http://localhost:5173 http://localhost:4173" },
+          { "key": "Access-Control-Allow-Origin",  "value": "https://qrcallbox.com https://www.qrcallbox.com https://qrwebaccdb.web.app https://qrwebaccdb.firebaseapp.com http://localhost:5173 http://localhost:4173" },
           { "key": "Access-Control-Allow-Methods", "value": "GET,POST,OPTIONS" },
           { "key": "Access-Control-Allow-Headers", "value": "Content-Type, X-API-Key, Authorization" },
           { "key": "X-Content-Type-Options", "value": "nosniff" },

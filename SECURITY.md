@@ -1,10 +1,10 @@
 # Security Documentation
 
-## 🔒 Security Overview
+##  Security Overview
 
 QRcallbox has been hardened with comprehensive security measures to protect user data and prevent common web application vulnerabilities.
 
-## 🛡️ Security Features
+##  Security Features
 
 ### **Authentication & Authorization**
 - Firebase Authentication for user management
@@ -37,13 +37,13 @@ QRcallbox has been hardened with comprehensive security measures to protect user
   - `X-XSS-Protection: 1; mode=block`
   - `Referrer-Policy: strict-origin-when-cross-origin`
 
-## ⚠️ Known Limitations
+##  Known Limitations
 
 1. **Rate Limiting**: Currently uses in-memory storage (not suitable for multi-instance deployments)
 2. **Session Management**: Relies on Firebase Auth token expiration
 3. **Audit Logging**: Basic logging implemented, enhanced audit trails recommended for production
 
-## 🔧 Security Configuration
+##  Security Configuration
 
 ### Required Environment Variables
 ```bash
@@ -58,7 +58,7 @@ firebase functions:secrets:set GROUPME_CLIENT_ID
 ### Firestore Security Rules
 Located in `firestore.rules` - deployed automatically with `firebase deploy --only firestore:rules`
 
-## 📋 Security Checklist
+##  Security Checklist
 
 - [x] Database access controls implemented
 - [x] API authentication on sensitive endpoints
@@ -74,7 +74,7 @@ Located in `firestore.rules` - deployed automatically with `firebase deploy --on
 
 For security vulnerabilities, please contact the development team directly rather than creating public issues.
 
-## 📚 Security Best Practices
+##  Security Best Practices
 
 1. **Regular Updates**: Keep dependencies updated
 2. **Secret Rotation**: Regularly rotate API keys and secrets
@@ -82,7 +82,7 @@ For security vulnerabilities, please contact the development team directly rathe
 4. **Backup**: Maintain secure backups of critical data
 5. **Testing**: Regular security testing and code reviews
 
-## 🔍 Security Testing
+##  Security Testing
 
 The application has been tested for:
 - SQL/NoSQL injection vulnerabilities

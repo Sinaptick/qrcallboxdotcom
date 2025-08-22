@@ -2,7 +2,7 @@
 
 A real-time assistance system that enables customers to scan QR codes and instantly notify staff for help in specific store areas. Built with React, Firebase, and includes AI-powered insights for analyzing customer assistance patterns.
 
-## 🚀 Features
+##  Features
 
 ### Core Functionality
 - **QR Code Generation**: Create location-specific QR codes for different store areas
@@ -21,7 +21,7 @@ A real-time assistance system that enables customers to scan QR codes and instan
 - **Firebase Backend**: Scalable cloud infrastructure with Firestore database
 - **Print-Ready Posters**: Generate high-resolution QR code posters for printing
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 ### Frontend
 - **React 18** - Modern UI framework
@@ -40,7 +40,7 @@ A real-time assistance system that enables customers to scan QR codes and instan
 - **Autoprefixer** - CSS vendor prefixing
 - **ESLint** - Code linting (configured for functions)
 
-## 📋 Prerequisites
+##  Prerequisites
 
 - Node.js 20 or higher
 - Firebase CLI
@@ -50,7 +50,7 @@ A real-time assistance system that enables customers to scan QR codes and instan
   - Functions
   - Hosting
 
-## 🔧 Installation
+##  Installation
 
 1. **Clone the repository**
    ```bash
@@ -74,7 +74,7 @@ A real-time assistance system that enables customers to scan QR codes and instan
    firebase functions:secrets:set GROUPME_CLIENT_ID
    ```
 
-## 🚀 Development
+##  Development
 
 ### Start Development Server
 ```bash
@@ -93,7 +93,7 @@ This builds the app and copies the poster template to the dist folder.
 firebase deploy
 ```
 
-## 📱 Usage
+##  Usage
 
 ### For Store Staff
 
@@ -125,7 +125,7 @@ firebase deploy
 - **User Search**: Look up user information by email
 - **System Overview**: Monitor all stores and areas
 
-## 🔐 Security Features
+##  Security Features
 
 - Email verification required for new accounts
 - Admin approval process for new users
@@ -133,7 +133,7 @@ firebase deploy
 - Input validation and sanitization
 - CORS configuration for API endpoints
 
-## 📊 Analytics Features
+##  Analytics Features
 
 ### Heatmap Visualization
 - Visual representation of assistance request frequency
@@ -151,7 +151,7 @@ firebase deploy
 - **Time Filter**: Analyze data by week ranges
 - **Combined Filters**: Mix and match for detailed analysis
 
-## 🔧 Configuration
+##  Configuration
 
 ### Firebase Functions Configuration
 The app uses Firebase Functions for:
@@ -166,7 +166,7 @@ The app uses Firebase Functions for:
 3. Configure the client ID in Firebase Functions secrets
 4. Use the OAuth flow to connect groups
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ├── functions/              # Firebase Functions
@@ -184,7 +184,7 @@ The app uses Firebase Functions for:
 └── vite.config.js        # Vite configuration
 ```
 
-## 🤝 Contributing
+##  Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -192,18 +192,18 @@ The app uses Firebase Functions for:
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📄 License
+##  License
 
 This project is proprietary software. All rights reserved.
 
-## 🆘 Support
+##  Support
 
 For support and questions:
 - Create an issue in this repository
 - Contact the development team
 - Check the Firebase console for backend logs
 
-## 📈 Scalability & Performance
+##  Scalability & Performance
 
 ### Scale Assessment
 QRcallbox is designed to handle enterprise-level usage patterns:
@@ -249,7 +249,7 @@ QRcallbox is designed to handle enterprise-level usage patterns:
 
 The current architecture is well-suited for significant growth and can handle enterprise-scale deployments with minimal modifications.
 
-## 🔄 Version History
+##  Version History
 
 - **v0.0.1** - Initial release with core QR generation and assistance features
 

@@ -25,6 +25,8 @@ const BASE_CALLBACK = "https://us-central1-qrwebaccdb.cloudfunctions.net/groupme
 
 // Allowed origins for CORS
 const ALLOWED_ORIGINS = [
+  "https://qrcallbox.com",
+  "https://www.qrcallbox.com",
   "https://qrwebaccdb.web.app", 
   "https://qrwebaccdb.firebaseapp.com",
   "http://localhost:5173", // for development
@@ -120,9 +122,10 @@ export const groupmeStart = onRequest(
       const state = req.query.state ? sanitizeInput(String(req.query.state), 50) : "";
       const clientId = GROUPME_CLIENT_ID.value().trim();
 
-      // Try GroupMe's simplest OAuth format
-      const authorizeUrl = `https://oauth.groupme.com/oauth/authorize?client_id=${encodeURIComponent(clientId)}`;
+      // GroupMe OAuth with proper redirect_uri and state
+      const authorizeUrl = `https://oauth.groupme.com/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(BASE_CALLBACK)}${state ? `&state=${encodeURIComponent(state)}` : ''}`;
 
+      logger.info("Redirecting to GroupMe OAuth", { authorizeUrl: authorizeUrl.substring(0, 100) + "..." });
       res.redirect(authorizeUrl);
     } catch (e) {
       logger.error("OAuth start error:", e.message);
@@ -184,7 +187,7 @@ export const groupmeCallback = onRequest(
           </head>
           <body>
             <div class="container">
-              <h1 id="title">🔄 Processing...</h1>
+              <h1 id="title">Processing...</h1>
               <p id="message" class="loading">Connecting your GroupMe account...</p>
             </div>
             
@@ -251,7 +254,7 @@ export const groupmeCallback = onRequest(
                   }
                   
                   // Success!
-                  document.getElementById('title').textContent = '✅ GroupMe Connected!';
+                  document.getElementById('title').textContent = 'GroupMe Connected!';
                   document.getElementById('message').innerHTML = '<span class="success">Your GroupMe account has been successfully connected.</span><br>You can now close this window and return to the app.';
                   
                   // Notify parent window
@@ -639,7 +642,7 @@ export const s = onRequest({
         </head>
         <body>
           <div class="container">
-            <h1>🛎️ Help is on the way!</h1>
+            <h1>Help is on the way!</h1>
             <p class="success">Your assistance request has been sent to store staff.</p>
             <p><strong>Store:</strong> ${sanitizeInput(tokenData.store, 10)}</p>
             <p><strong>Area:</strong> ${sanitizeInput(tokenData.area, 50)}</p>
@@ -667,7 +670,7 @@ async function sendGroupMeNotification(store, area) {
       const tokenDoc = await db.collection("groupme_tokens").doc(botData.user_id).get();
       if (!tokenDoc.exists) continue;
       
-      const message = `🛎️ Customer assistance needed!\\n📍 Store: ${sanitizeInput(store, 10)}\\n🏪 Area: ${sanitizeInput(area, 50)}\\n⏰ Time: ${new Date().toLocaleTimeString()}`;
+      const message = `Customer assistance needed!\\nStore: ${sanitizeInput(store, 10)}\\nArea: ${sanitizeInput(area, 50)}\\nTime: ${new Date().toLocaleTimeString()}`;
       
       // Send message via bot
       await fetch("https://api.groupme.com/v3/bots/post", {

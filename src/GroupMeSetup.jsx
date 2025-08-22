@@ -385,7 +385,7 @@ export default function GroupMeSetup() {
                 
                 {botCreated && (
                   <div className="p-3 bg-green-900/20 border border-green-500/50 rounded-xl text-green-400 text-sm">
-                    ✅ Bot created successfully! You'll now receive notifications in your selected GroupMe group when customers scan QR codes.
+                    Bot created successfully! You'll now receive notifications in your selected GroupMe group when customers scan QR codes.
                   </div>
                 )}
               </div>

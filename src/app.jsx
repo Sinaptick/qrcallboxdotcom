@@ -57,7 +57,7 @@ class ErrorBoundary extends React.Component {
 }
 
 // -----------------------------
-// 🔧 Firebase Setup
+// Firebase Setup
 // -----------------------------
 const firebaseConfig = {
   apiKey: "AIzaSyCbpXuSt3UHAWtAfiKbVx621vwpL5cKnkA",
@@ -304,7 +304,7 @@ function GenerateQR() {
 }
 
 // -----------------------------
-// 🔐 Auth Views
+// Auth Views
 // -----------------------------
 function SignInForm({ onSwitch }) {
   const { auth, db } = useFirebase();
@@ -461,7 +461,7 @@ function RegisterForm({ onSwitch }) {
 }
 
 // -----------------------------
-// 🧭 App Shell w/ Tabs (single definition)
+// App Shell w/ Tabs (single definition)
 // -----------------------------
 function Settings({ user }) {
   const { isDark, toggleTheme } = useTheme();
@@ -827,7 +827,7 @@ function Dashboard() {
   );
 }
 
-// 📋 Admin pending changes management
+// Admin pending changes management
 function PendingChangesList({ db }) {
   const [pendingUsers, setPendingUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -939,7 +939,7 @@ function PendingChangesList({ db }) {
   );
 }
 
-// 👮 Admin user search (standalone)
+// Admin user search (standalone)
 function UserStatusSearch({ db }) {
   const [email, setEmail] = useState("");
   const [result, setResult] = useState(null);
@@ -1514,7 +1514,7 @@ function Landing() {
 }
 
 // -----------------------------
-// 🔄 App Root
+// App Root
 // -----------------------------
 function AppInner() {
   const { auth } = useFirebase();
