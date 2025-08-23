@@ -1,4 +1,58 @@
-# QRcallbox Security Changelog
+# QRcallbox Changelog
+
+## Version 2.1.0 - Analytics & Response Tracking Release (2025-08-22)
+
+### **NEW FEATURES**
+
+#### **Top Responders Leaderboard** 
+- **Live Leaderboard Dashboard** showing top 5 fastest and most active associates
+- **Time Period Selector** - Daily (default), Weekly, Monthly, and All-Time views
+- **Business Hours Filtering** - Only counts responses during 6:00 AM - 10:59 PM
+- **Comprehensive Statistics** per responder:
+  - Total response count with ranking badges (🥇🥈🥉)
+  - Average response time in minutes
+  - Fastest to slowest response time range
+- **Real-time Updates** - Refreshes automatically when new responses are logged
+
+#### **Enhanced Response Logging**
+- **Any Message Logging** - Records ANY first message after QR assistance request (no longer requires specific keywords)
+- **Business Hours Dashboard Filter** - Average response time now filtered to 6:00 AM - 10:59 PM business hours
+- **Timezone Corrections** - Fixed bot message timestamps to show correct local time
+- **Like Detection Ready** - Infrastructure for logging GroupMe message likes as responses
+
+#### **Improved Webhook System**
+- **Extended Time Window** - Webhook now looks back 6 hours instead of 30 minutes to handle timezone differences
+- **Database Index Optimization** - Created composite Firestore indexes for efficient responder queries
+- **Enhanced Error Handling** - Better debugging and error recovery for webhook processing
+
+### **TECHNICAL IMPROVEMENTS**
+
+#### **Frontend** (`src/app.jsx`)
+- Added `TopResponders` component with time period filtering
+- Enhanced `Dashboard` component with business hours response time calculation
+- Improved Firestore querying with proper indexing for performance
+- Added comprehensive error handling and loading states
+
+#### **Backend** (`functions/index.js`, `functions/groupme-webhook.js`)  
+- Updated `sendGroupMeNotification()` with timezone-aware timestamp formatting
+- Enhanced webhook response detection logic to capture any first message
+- Added response type tracking ("message" vs "like")
+- Implemented like count and user tracking for future GroupMe like detection
+
+#### **Database Schema Enhancements**
+- Added fields to `logs` collection:
+  - `responseType`: "message" or "like" 
+  - `likeCount`: Number of likes on response
+  - `likedByUsers`: Array of user IDs who liked
+  - `hasLikes`: Boolean flag for like detection
+  - `lastLikeUpdate`: Timestamp of last like update
+
+### **DEPLOYMENT IMPROVEMENTS**
+- Fixed build process issues with proper Vite configuration
+- Enhanced deployment workflow with proper root directory building
+- Added debug logging for troubleshooting leaderboard functionality
+
+---
 
 ## Version 2.0.0 - Security Hardening Release (2025-01-22)
 

@@ -42,48 +42,9 @@ export default function GroupMeSetup() {
       let storedUserId = localStorage.getItem(`groupme_user_id_${user.uid}`);
       addDebug(`localStorage check: ${storedUserId ? storedUserId : 'not found'}`);
       
-      // If no stored user ID, try the direct GroupMe user ID we stored
+      // If no stored user ID, user needs to connect GroupMe
       if (!storedUserId) {
-        addDebug("No localStorage found, testing direct connection...");
-        // Check if we have a working GroupMe connection by testing with known user ID
-        try {
-          const testUserId = "97510571"; // Your GroupMe user ID
-          const testUrl = `/api/groupme/groups?user_id=${testUserId}`;
-          addDebug(`Testing API: ${testUrl}`);
-          
-          const token = await user.getIdToken();
-          addDebug(`Got Firebase token: ${token.substring(0, 20)}...`);
-          
-          const testRes = await fetch(testUrl, {
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          
-          addDebug(`API response: ${testRes.status} ${testRes.statusText}`);
-          
-          if (testRes.ok) {
-            const responseText = await testRes.text();
-            addDebug(`Raw API response: ${responseText.substring(0, 200)}...`);
-            
-            try {
-              const data = JSON.parse(responseText);
-              addDebug(`Parsed JSON successfully, keys: ${Object.keys(data).join(', ')}`);
-              // Working connection found, use it
-              storedUserId = testUserId;
-              localStorage.setItem(`groupme_user_id_${user.uid}`, storedUserId);
-              addDebug(`Stored user ID in localStorage`);
-            } catch (parseError) {
-              addDebug(`JSON parse error: ${parseError.message}`);
-              addDebug(`Response was: ${responseText}`);
-            }
-          } else {
-            const errorText = await testRes.text();
-            addDebug(`API error: ${errorText.substring(0, 200)}`);
-          }
-        } catch (e) {
-          addDebug(`Connection test failed: ${e.message}`);
-        }
+        addDebug("No localStorage found - user needs to connect GroupMe");
       }
       
       if (storedUserId) {
@@ -107,43 +68,45 @@ export default function GroupMeSetup() {
       return;
     }
     
-    // Direct connection with stored token
-    const useDirectConnection = window.confirm(
-      "Use existing GroupMe connection?\n\n" +
-      "Click OK to connect with your stored GroupMe account, or Cancel to try OAuth."
-    );
-    
-    if (useDirectConnection) {
-      // Use the stored GroupMe connection
-      const realUserId = "97510571"; // Your actual GroupMe user ID
-      localStorage.setItem(`groupme_user_id_${user.uid}`, realUserId);
-      setGroupmeUserId(realUserId);
-      setConnected(true);
-      fetchGroups(realUserId);
-      return;
-    }
-    
     setError("");
     // Pass Firebase UID as state to link accounts later
     const oauthUrl = `${FUNCTIONS_BASE.groupmeStart}?state=${user.uid}`;
     console.log("Opening GroupMe OAuth with URL:", oauthUrl);
     window.open(oauthUrl, 'groupme-oauth', 'width=600,height=600');
     
-    // Listen for OAuth completion
-    const checkForCompletion = setInterval(() => {
-      const storedUserId = localStorage.getItem(`groupme_user_id_${user.uid}`);
-      console.log("Checking for OAuth completion, stored user ID:", storedUserId);
-      if (storedUserId) {
-        console.log("OAuth completed successfully! GroupMe user ID:", storedUserId);
-        clearInterval(checkForCompletion);
-        setGroupmeUserId(storedUserId);
-        setConnected(true);
-        fetchGroups(storedUserId);
+    // Listen for OAuth completion via postMessage
+    const handleMessage = (event) => {
+      console.log("Received message:", event);
+      
+      // Verify the message is from our callback
+      if (event.origin !== "https://groupmecallback-46us5rurra-uc.a.run.app") {
+        console.log("Ignoring message from unknown origin:", event.origin);
+        return;
       }
-    }, 1000);
+      
+      if (event.data && event.data.type === 'groupme_connected') {
+        const { userId, state } = event.data;
+        console.log("OAuth completed successfully! GroupMe user ID:", userId);
+        
+        // Verify the state matches our user
+        if (state === user.uid) {
+          localStorage.setItem(`groupme_user_id_${user.uid}`, userId);
+          setGroupmeUserId(userId);
+          setConnected(true);
+          fetchGroups(userId);
+          
+          // Remove the event listener
+          window.removeEventListener('message', handleMessage);
+        }
+      }
+    };
     
-    // Stop checking after 5 minutes
-    setTimeout(() => clearInterval(checkForCompletion), 300000);
+    window.addEventListener('message', handleMessage);
+    
+    // Clean up listener after 5 minutes
+    setTimeout(() => {
+      window.removeEventListener('message', handleMessage);
+    }, 300000);
   };
 
   // Step 2: Load groups
@@ -207,24 +170,7 @@ export default function GroupMeSetup() {
       setLoading(true);
       setError("");
       
-      // Handle mock integration
-      if (groupmeUserId.startsWith("mock_user_")) {
-        addDebug("Using mock integration for bot creation");
-        // Simulate bot creation delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        setBotCreated(true);
-        
-        // Store mock bot info
-        localStorage.setItem(`groupme_bot_${user.uid}`, JSON.stringify({
-          bot_id: "mock_bot_" + Date.now(),
-          group_id: selectedGroup,
-          mock: true
-        }));
-        
-        addDebug("Mock bot created successfully");
-        setLoading(false);
-        return;
-      }
+      // Remove mock integration - all users should use real GroupMe
       
       const url = `/api/groupme/createbot`;
       addDebug(`Bot creation URL: ${url}`);
@@ -320,36 +266,63 @@ export default function GroupMeSetup() {
             <p className="text-sm text-secondary mb-3">
               Click below to connect your GroupMe account and set up notifications.
             </p>
+            <div className="p-3 bg-blue-900/20 border border-blue-500/50 rounded-xl text-blue-400 text-sm mb-3">
+              <strong>Note:</strong> GroupMe will use your currently logged-in account. To connect a different GroupMe account:
+              <ol className="mt-2 ml-4 list-decimal">
+                <li>Open <a href="https://web.groupme.com" target="_blank" className="underline">GroupMe Web</a> in a new tab</li>
+                <li>Log out if needed and sign in with the desired account</li>
+                <li>Return here and click "Connect GroupMe Account"</li>
+              </ol>
+            </div>
             <div className="flex gap-2 flex-wrap">
               <Button onClick={handleConnect} disabled={loading || !user}>
                 {loading ? "Connecting..." : "Connect GroupMe Account"}
               </Button>
-              <Button 
-                onClick={() => {
-                  // Direct connection bypass
-                  const realUserId = "97510571";
-                  localStorage.setItem(`groupme_user_id_${user.uid}`, realUserId);
-                  setGroupmeUserId(realUserId);
-                  setConnected(true);
-                  fetchGroups(realUserId);
-                }}
-                disabled={loading || !user}
-                className="bg-green-600 hover:bg-green-700"
-              >
-                Force Connect (Bypass)
-              </Button>
+              {/* Debug button for clearing connection - only show in development */}
+              {window.location.hostname === 'localhost' && (
+                <Button 
+                  onClick={() => {
+                    localStorage.removeItem(`groupme_user_id_${user.uid}`);
+                    setGroupmeUserId('');
+                    setConnected(false);
+                    setGroups([]);
+                    setSelectedGroup('');
+                    setBotCreated(false);
+                    addDebug('Cleared all connection data - ready for fresh connection');
+                    checkConnectionStatus();
+                  }}
+                  disabled={loading || !user}
+                  className="bg-red-600 hover:bg-red-700"
+                >
+                  Clear Connection (Debug)
+                </Button>
+              )}
             </div>
           </div>
         ) : (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-green-400 font-medium">✓ Connected to GroupMe</span>
-              <button 
-                onClick={disconnect}
-                className="text-sm text-muted hover:text-red-400"
-              >
-                Disconnect
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => {
+                    // Open GroupMe logout in new tab
+                    window.open('https://web.groupme.com/signout', '_blank');
+                    setTimeout(() => {
+                      alert('After logging out of GroupMe and signing in with a different account, click "Switch Account" to reconnect.');
+                    }, 500);
+                  }}
+                  className="text-sm text-blue-400 hover:text-blue-300"
+                >
+                  Change GroupMe User
+                </button>
+                <button 
+                  onClick={disconnect}
+                  className="text-sm text-muted hover:text-red-400"
+                >
+                  Disconnect
+                </button>
+              </div>
             </div>
             
             {loading ? (

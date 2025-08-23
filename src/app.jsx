@@ -766,8 +766,16 @@ function Dashboard() {
         // Total requests today
         const totalRequests = todayLogs.length;
         
-        // Calculate average response time
-        const respondedLogs = todayLogs.filter(log => log.respondedAt && log.ts);
+        // Calculate average response time for business hours only (6:00 AM - 10:59 PM)
+        const respondedLogs = todayLogs.filter(log => {
+          if (!log.respondedAt || !log.ts) return false;
+          
+          // Check if response was within business hours (6:00 AM - 10:59 PM)
+          const responseTime = log.respondedAt.toDate ? log.respondedAt.toDate() : new Date(log.respondedAt);
+          const hour = responseTime.getHours();
+          return hour >= 6 && hour <= 22; // 6:00 AM (6) through 10:59 PM (22)
+        });
+        
         let avgResponseTime = 0;
         
         if (respondedLogs.length > 0) {
@@ -821,8 +829,187 @@ function Dashboard() {
         <div className="mt-2 text-2xl font-semibold text-primary">
           {loading ? "—" : stats.avgResponseTime > 0 ? `${stats.avgResponseTime}m` : "—"}
         </div>
-        <div className="text-xs text-muted mt-1">minutes</div>
+        <div className="text-xs text-muted mt-1">6am-10:59pm only</div>
       </div>
+    </div>
+  );
+}
+
+// Top Responders component
+function TopResponders({ db }) {
+  const [responders, setResponders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [timePeriod, setTimePeriod] = useState('daily');
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const { getDocs, collection, query, where, orderBy } = await import("firebase/firestore");
+        
+        // Calculate date range based on selected period
+        const now = new Date();
+        let startDate;
+        
+        switch (timePeriod) {
+          case 'daily':
+            startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            break;
+          case 'weekly':
+            const dayOfWeek = now.getDay();
+            startDate = new Date(now.getTime() - (dayOfWeek * 24 * 60 * 60 * 1000));
+            startDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+            break;
+          case 'monthly':
+            startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+            break;
+          case 'alltime':
+            startDate = new Date(2020, 0, 1); // Far back date
+            break;
+          default:
+            startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        }
+        
+        // Query responded logs within time period and business hours
+        const q = query(
+          collection(db, "logs"),
+          where("respondedAt", "!=", null),
+          orderBy("respondedAt", "desc")
+        );
+        
+        const snap = await getDocs(q);
+        const logs = snap.docs.map(d => d.data());
+        console.log('TopResponders: Found', logs.length, 'logs with responses');
+        console.log('TopResponders: Time period:', timePeriod, 'Start date:', startDate);
+        
+        // Filter to time period and business hours (6 AM - 10:59 PM)
+        const filteredLogs = logs.filter(log => {
+          const responseTime = log.respondedAt.toDate ? log.respondedAt.toDate() : new Date(log.respondedAt);
+          const hour = responseTime.getHours();
+          
+          // Filter by business hours
+          if (hour < 6 || hour > 22) return false;
+          
+          // Filter by time period
+          if (timePeriod !== 'alltime' && responseTime < startDate) return false;
+          
+          return true;
+        });
+        
+        console.log('TopResponders: After filtering:', filteredLogs.length, 'logs');
+        
+        // Aggregate data by responder name
+        const responderStats = {};
+        
+        filteredLogs.forEach(log => {
+          const name = log.responderName;
+          if (!name) return;
+          
+          if (!responderStats[name]) {
+            responderStats[name] = {
+              name,
+              totalResponses: 0,
+              totalResponseTime: 0,
+              fastestResponse: Infinity,
+              slowestResponse: 0
+            };
+          }
+          
+          const responseTimeSeconds = log.responseTimeSeconds || 0;
+          responderStats[name].totalResponses++;
+          responderStats[name].totalResponseTime += responseTimeSeconds;
+          responderStats[name].fastestResponse = Math.min(responderStats[name].fastestResponse, responseTimeSeconds);
+          responderStats[name].slowestResponse = Math.max(responderStats[name].slowestResponse, responseTimeSeconds);
+        });
+        
+        // Calculate averages and sort by total responses
+        const sortedResponders = Object.values(responderStats)
+          .map(responder => ({
+            ...responder,
+            avgResponseTime: Math.round(responder.totalResponseTime / responder.totalResponses / 60), // Convert to minutes
+            fastestResponseMin: Math.round(responder.fastestResponse / 60),
+            slowestResponseMin: Math.round(responder.slowestResponse / 60)
+          }))
+          .sort((a, b) => b.totalResponses - a.totalResponses)
+          .slice(0, 5);
+        
+        console.log('TopResponders: Final sorted responders:', sortedResponders);
+        
+        if (mounted) {
+          setResponders(sortedResponders);
+        }
+      } catch (err) {
+        console.error("Error loading responders:", err);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [db, timePeriod]);
+
+  const getRankEmoji = (index) => {
+    const emojis = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+    return emojis[index] || `${index + 1}️⃣`;
+  };
+
+  const getPeriodLabel = () => {
+    switch (timePeriod) {
+      case 'daily': return 'Today';
+      case 'weekly': return 'This Week';  
+      case 'monthly': return 'This Month';
+      case 'alltime': return 'All Time';
+      default: return 'Today';
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-themed bg-tertiary p-6">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-semibold text-primary">📊 Top Responders</h3>
+        <select 
+          value={timePeriod}
+          onChange={(e) => setTimePeriod(e.target.value)}
+          className="px-3 py-1 text-sm border border-themed bg-secondary rounded"
+        >
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="alltime">All Time</option>
+        </select>
+      </div>
+      
+      <div className="text-sm text-muted mb-3">{getPeriodLabel()} • Business Hours Only</div>
+      
+      {loading ? (
+        <div className="text-center py-4 text-muted">Loading...</div>
+      ) : responders.length === 0 ? (
+        <div className="text-center py-4 text-muted">No responses yet for this period</div>
+      ) : (
+        <div className="space-y-3">
+          {responders.map((responder, index) => (
+            <div key={responder.name} className="flex items-center justify-between p-3 bg-secondary rounded-lg">
+              <div className="flex items-center space-x-3">
+                <span className="text-lg">{getRankEmoji(index)}</span>
+                <div>
+                  <div className="font-medium text-primary">{responder.name}</div>
+                  <div className="text-xs text-muted">
+                    {responder.totalResponses} response{responder.totalResponses !== 1 ? 's' : ''}
+                  </div>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="font-semibold text-primary">
+                  {responder.avgResponseTime}m avg
+                </div>
+                <div className="text-xs text-muted">
+                  {responder.fastestResponseMin}m - {responder.slowestResponseMin}m
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1085,7 +1272,14 @@ function Shell({ user, onSignOut }) {
 
         if (mounted) {
           setLogs(logsArr);
-          setStores(Array.from(storeSet).sort());
+          const sortedStores = Array.from(storeSet).sort();
+          setStores(sortedStores);
+          
+          // Auto-select user's store if it exists in the available stores and no stores are currently selected
+          if (userDoc?.storeNumber && sortedStores.includes(userDoc.storeNumber) && selectedStores.length === 0) {
+            setSelectedStores([userDoc.storeNumber]);
+          }
+          
           setWeeks(
             Array.from(weekMap.values()).sort((a, b) => {
               const wa = parseInt(a.match(/Week (\d+)/)?.[1] || "0", 10);
@@ -1276,12 +1470,20 @@ function Shell({ user, onSignOut }) {
         </Card>
 
         {active === "Dashboard" && (
-          <Card>
-            <CardHeader title="Dashboard" subtitle="Overview of live assistance activity" />
-            <CardBody>
-              <Dashboard />
-            </CardBody>
-          </Card>
+          <>
+            <Card>
+              <CardHeader title="Dashboard" subtitle="Overview of live assistance activity" />
+              <CardBody>
+                <Dashboard />
+              </CardBody>
+            </Card>
+            <Card>
+              <CardHeader title="Top Responders" subtitle="Leaderboard of fastest and most active associates" />
+              <CardBody>
+                <TopResponders db={db} />
+              </CardBody>
+            </Card>
+          </>
         )}
 
         {active === "Insights" && (

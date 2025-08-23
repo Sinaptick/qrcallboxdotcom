@@ -13,6 +13,8 @@ A real-time assistance system that enables customers to scan QR codes and instan
 ### Analytics & Insights
 - **Heatmap Visualization**: Visual representation of assistance requests by store area
 - **AI-Powered Insights**: Natural language analysis of customer assistance patterns
+- **Top Responders Leaderboard**: Live ranking of fastest and most active associates with response time analytics
+- **Business Hours Analytics**: Response time calculations filtered to business hours (6:00 AM - 10:59 PM)
 - **Time-based Filtering**: Analyze data by specific weeks and time periods
 - **Store/Area Filtering**: Filter insights by specific stores and departments
 
@@ -20,6 +22,36 @@ A real-time assistance system that enables customers to scan QR codes and instan
 - **GroupMe Integration**: Connect with GroupMe for team notifications
 - **Firebase Backend**: Scalable cloud infrastructure with Firestore database
 - **Print-Ready Posters**: Generate high-resolution QR code posters for printing
+
+## 📊 Top Responders Leaderboard
+
+The Top Responders feature provides gamification and performance tracking for your team by ranking associates based on their response activity and speed.
+
+### Features
+- **🥇 Live Rankings**: Real-time leaderboard showing top 5 most active responders
+- **⏱️ Response Time Tracking**: Average, fastest, and slowest response times per associate
+- **📅 Time Period Selection**: View performance for Daily, Weekly, Monthly, or All-Time periods
+- **🕐 Business Hours Focus**: Analytics filtered to business hours (6:00 AM - 10:59 PM)
+- **📱 Real-time Updates**: Leaderboard refreshes automatically as new responses are logged
+
+### How It Works
+1. **Customer requests assistance** by scanning a QR code
+2. **Bot notifies the team** in GroupMe with location and timestamp
+3. **Associate responds** with any message in the GroupMe chat
+4. **Response is logged** with timing, responder name, and response details
+5. **Leaderboard updates** showing updated rankings and statistics
+
+### Displayed Information
+- **Ranking badges** (🥇🥈🥉) for top performers
+- **Total response count** for the selected time period
+- **Average response time** in minutes
+- **Response time range** (fastest to slowest) for each associate
+- **Empty state message** when no responses exist for the selected period
+
+### Data Privacy
+- Only displays first names from GroupMe profiles
+- Response times calculated from QR scan to first message
+- All data filtered to business hours for relevant performance metrics
 
 ##  Tech Stack
 
