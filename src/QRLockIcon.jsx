@@ -8,7 +8,7 @@ export default function QRLockIcon({ className = "h-6 w-6 text-white" }) {
       fill="currentColor"
       xmlns="http://www.w3.org/2000/svg"
     >
-      {/* Message bubble with tail from your SVG */}
+      {/* Message bubble with tail from your updated SVG */}
       <path 
         d="m2.92,2c-1.06,0 -1.92,0.9 -1.92,2l0,14c0,1.1 0.86,2 1.92,2l1.8,0.13l-3.48,3.75l9.72,-3.63l9.24,-0.25c1.06,0 1.92,-0.9 1.92,-2l0,-14c0,-1.1 -0.86,-2 -1.92,-2l-17.28,0z" 
         fill="currentColor"
@@ -26,9 +26,9 @@ export default function QRLockIcon({ className = "h-6 w-6 text-white" }) {
         <rect x="5" y="12.81" width="5" height="5"/>
       </g>
       
-      {/* Key icon elements from your SVG */}
+      {/* Key icon elements from your updated SVG */}
       <g fill="white">
-        {/* Key head */}
+        {/* Key head (circle) */}
         <circle 
           cx="1" cy="1" r="1.2" 
           fill="none" 
@@ -36,20 +36,20 @@ export default function QRLockIcon({ className = "h-6 w-6 text-white" }) {
           strokeWidth="0.8" 
           transform="matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"
         />
-        {/* Key shaft */}
+        {/* Key shaft - updated positioning */}
         <rect 
-          x="1.8" y="0.7" width="2.5" height="0.6" 
-          transform="translate(15.0319 14.7312) scale(1.23625 1.22975) translate(-15.0319 -14.7312) matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"
+          x="13.83" y="2.7" width="2.5" height="0.6" 
+          transform="matrix(1.52466 1.35751 -1.55388 1.38353 -0.660839 -7.70445)"
         />
-        {/* Key teeth 1 */}
+        {/* Key teeth 1 - updated positioning */}
         <rect 
-          x="4" y="0.3" width="0.3" height="0.8" 
-          transform="matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"
+          x="28.92" y="-0.54" width="0.3" height="0.8" 
+          transform="translate(18.075 18.1222) scale(1.1571 1.18894) translate(-18.075 -18.1222) matrix(1.69319 2.13421 -2.04735 1.87553 -29.7545 -44.1305)"
         />
-        {/* Key teeth 2 */}
+        {/* Key teeth 2 - updated positioning */}
         <rect 
-          x="17.5" y="16" width="0.5" height="0.3" 
-          transform="rotate(135 17.75 16.15)"
+          x="17.98" y="15.75" width="1.62" height="0.75" 
+          transform="rotate(135 18.7906 16.123)"
         />
       </g>
     </svg>
