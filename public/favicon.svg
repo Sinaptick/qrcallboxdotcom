@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<svg width="28.8" height="28.8" xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg">
+<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg">
  <!-- Blue message bubble background -->
 
  <!-- QR positioning squares - white outlines -->
@@ -16,8 +16,8 @@
    <rect height="5" id="svg_7" transform="matrix(1 0 0 1 0 0)" width="5" x="5" y="12.81"/>
   </g>
   <circle cx="1" cy="1" fill="none" id="svg_10" r="1.2" stroke="white" stroke-width="0.8" transform="matrix(1 0 0 1 0 0) matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"/>
-  <rect fill="white" height="0.6" id="svg_11" transform="matrix(1 0 0 1 0 0) translate(15.0319 14.7312) scale(1.23625 1.22975) translate(-15.0319 -14.7312) matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)" width="2.5" x="1.8" y="0.7"/>
-  <rect fill="white" height="0.8" id="svg_12" transform="matrix(1 0 0 1 0 0) rotate(0.328942 19.2198 16.9799) matrix(1.70541 2.12445 -2.03655 1.88725 -30.1045 -43.8483)" width="0.3" x="28.61" y="-0.54"/>
-  <rect fill="white" height="0.48" id="svg_13" transform="matrix(1 0 0 1 0 0) rotate(135 17.8988 16.0353)" width="1.97" x="16.92" y="15.8"/>
+  <rect fill="white" height="0.6" id="svg_11" transform="matrix(1 0 0 1 0 0) matrix(1.52466 1.35751 -1.55388 1.38353 -0.660839 -7.70445)" width="2.5" x="13.83" y="2.7"/>
+  <rect fill="white" height="0.8" id="svg_12" transform="matrix(1 0 0 1 0 0) translate(18.075 18.1222) scale(1.1571 1.18894) translate(-18.075 -18.1222) matrix(1.69319 2.13421 -2.04735 1.87553 -29.7545 -44.1305)" width="0.3" x="28.92" y="-0.54"/>
+  <rect fill="white" height="0.75" id="svg_13" transform="matrix(1 0 0 1 0 0) rotate(135 18.7906 16.123)" width="1.62" x="17.98" y="15.75"/>
  </g>
 </svg>
