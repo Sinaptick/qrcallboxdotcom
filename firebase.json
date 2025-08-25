@@ -20,6 +20,18 @@
       { "source": "/api/groupme/groups", "function": { "functionId": "groupmeGroups", "region": "us-central1" } },
       { "source": "/api/groupme/createbot", "function": { "functionId": "groupmeCreateBot", "region": "us-central1" } },
       { "source": "/api/groupme/webhook", "function": { "functionId": "groupmeWebhook", "region": "us-central1" } },
+      { "source": "/api/workvivo/connect", "function": { "functionId": "workvivoConnect", "region": "us-central1" } },
+      { "source": "/api/workvivo/configure", "function": { "functionId": "workvivoConfig", "region": "us-central1" } },
+      { "source": "/api/workvivo/disconnect", "function": { "functionId": "workvivoDisconnect", "region": "us-central1" } },
+      { "source": "/api/workvivo/check-completion", "function": { "functionId": "workvivoCheckCompletion", "region": "us-central1" } },
+      { "source": "/api/tickets/submit", "function": { "functionId": "submitTicket", "region": "us-central1" } },
+      { "source": "/api/tickets/list", "function": { "functionId": "getTickets", "region": "us-central1" } },
+      { "source": "/api/tickets/my-tickets", "function": { "functionId": "getMyTickets", "region": "us-central1" } },
+      { "source": "/api/tickets/details", "function": { "functionId": "getTicketDetails", "region": "us-central1" } },
+      { "source": "/api/tickets/respond", "function": { "functionId": "respondToTicket", "region": "us-central1" } },
+      { "source": "/api/tickets/email-reply", "function": { "functionId": "handleEmailReply", "region": "us-central1" } },
+      { "source": "/api/tickets/lookup", "function": { "functionId": "lookupTicket", "region": "us-central1" } },
+      { "source": "/api/tickets/update-priority", "function": { "functionId": "updateTicketPriority", "region": "us-central1" } },
       { "source": "**", "destination": "/index.html" }
     ],
     "headers": [

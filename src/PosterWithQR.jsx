@@ -31,8 +31,8 @@ const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl }, ref) 
   }));
 
   function handlePrint() {
-    if (!printRef.current || !posterDataUrl) return;
-    const printContents = printRef.current.innerHTML;
+    if (!printRef.current || !posterDataUrl || !qrDataUrl) return;
+    
     const win = window.open('', '', 'width=800,height=1200');
     win.document.write(`
       <html><head><title>Print QR Poster</title>
@@ -85,11 +85,24 @@ const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl }, ref) 
           .label-wrapper { position: absolute; top: 0; left: 0; }
         }
       </style>
-      </head><body>` + printContents + `</body></html>`);
+      </head><body>
+        <div class="label-wrapper">
+          <div class="label-content">
+            <img src="${posterDataUrl}" alt="Poster" class="poster-img" />
+            <div class="qr-area">
+              <img src="${qrDataUrl}" alt="QR code" />
+            </div>
+          </div>
+        </div>
+      </body></html>`);
     win.document.close();
     win.focus();
-    win.print();
-    setTimeout(() => win.close(), 500);
+    
+    // Wait for images to load before printing
+    setTimeout(() => {
+      win.print();
+      setTimeout(() => win.close(), 500);
+    }, 1000);
   }
 
   if (loading) {

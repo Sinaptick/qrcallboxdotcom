@@ -42,6 +42,53 @@ service cloud.firestore {
         request.resource.data.user_id == request.auth.uid;
     }
 
+    // Workvivo config collection - users can only access their own config
+    match /workvivo_config/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Support tickets collection - users can create tickets, only admin can read/update all
+    match /support_tickets/{ticketId} {
+      // Users can create their own tickets
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      
+      // Users can read their own tickets
+      allow read: if request.auth != null && 
+        (resource.data.userId == request.auth.uid || 
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com'));
+      
+      // Only admin can update tickets (for responses)
+      allow update: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      
+      // Admin can read all tickets (for list queries)
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+    }
+
+    // Blocked IPs collection - only Functions/Admin can write, admin can read
+    match /blocked_ips/{ipAddress} {
+      // Only admin can read blocked IPs
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      // Only Functions can write via Admin SDK
+      allow write: if false;
+    }
+
+    // Spam logs collection - only Functions can write, admin can read
+    match /spam_logs/{logId} {
+      // Only admin can read spam logs
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      // Only Functions can write via Admin SDK
+      allow write: if false;
+    }
+
     // Deny all other access
     match /{document=**} {
       allow read, write: if false;

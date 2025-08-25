@@ -8,8 +8,16 @@ import { initializeApp, getApps } from "firebase/app";
 import UnapprovedUsersList from "./UnapprovedUsersList.jsx";
 import InsightsAI from "./InsightsAI.jsx";
 import GroupMeSetup from "./GroupMeSetup.jsx";
+// import WorkvivoSetup from "./WorkvivoSetup.jsx"; // Temporarily disabled
+import ContactUs from "./ContactUs.jsx";
+import TicketQueue from "./TicketQueue.jsx";
+import MyTickets from "./MyTickets.jsx";
+import Setup from "./Setup.jsx";
+import BlockedIPsManager from "./BlockedIPsManager.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
+import QRLockIcon from "./QRLockIcon.jsx";
+import TermsOfService from "./TermsOfService.jsx";
 import {
   getAuth,
   onAuthStateChanged,
@@ -1190,9 +1198,12 @@ function Shell({ user, onSignOut }) {
   const { db } = useFirebase();
   const isAdmin = user?.email === "sinaptick@gmail.com";
   const tabs = isAdmin
-    ? ["Dashboard", "Insights", "Generate QR", "Settings", "Admin"]
-    : ["Dashboard", "Insights", "Generate QR", "Settings"];
+    ? ["Dashboard", "Insights", "Generate QR", "Settings", "Admin", "Setup"]
+    : ["Dashboard", "Insights", "Generate QR", "Settings", "Setup"];
   const [active, setActive] = useState("Dashboard");
+  const [showContactUs, setShowContactUs] = useState(false);
+  const [currentAdminView, setCurrentAdminView] = useState("overview");
+  const [currentSettingsView, setCurrentSettingsView] = useState("account");
 
   // Approval gate
   const [userDoc, setUserDoc] = useState(null);
@@ -1432,10 +1443,8 @@ function Shell({ user, onSignOut }) {
         <div className="max-w-6xl mx-auto px-3 sm:px-4 py-3 sm:py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-xl bg-blue-600 flex items-center justify-center">
-                <svg viewBox="0 0 24 24" className="h-5 w-5 sm:h-6 sm:w-6 text-white fill-current">
-                  <path d="M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zM19 13h2v2h-2zM13 13h2v2h-2zM15 15h2v2h-2zM13 17h2v2h-2zM15 19h2v2h-2zM17 17h2v2h-2zM17 13h2v2h-2zM19 15h2v2h-2z"/>
-                </svg>
+              <div className="flex items-center justify-center">
+                <QRLockIcon className="h-8 w-8 sm:h-9 sm:w-9 text-blue-600" />
               </div>
               <div>
                 <div className="text-base sm:text-lg font-semibold text-primary">QRcallbox</div>
@@ -1468,6 +1477,20 @@ function Shell({ user, onSignOut }) {
             <Tabs tabs={tabs} current={active} onChange={setActive} />
           </CardBody>
         </Card>
+
+        {active === "Setup" && (
+          <Card>
+            <CardHeader title="Store Implementation Setup" subtitle="Follow these steps to implement QRcallbox in your store" />
+            <CardBody>
+              <Setup onNavigate={(tab, subView) => {
+                setActive(tab);
+                if (tab === "Settings" && subView) {
+                  setCurrentSettingsView(subView);
+                }
+              }} />
+            </CardBody>
+          </Card>
+        )}
 
         {active === "Dashboard" && (
           <>
@@ -1655,14 +1678,45 @@ function Shell({ user, onSignOut }) {
 
         {active === "Settings" && (
           <Card>
-            <CardHeader title="Settings" subtitle="Manage your account" />
+            <CardHeader title="Settings" subtitle="Manage your account and support tickets" />
             <CardBody>
-              <Settings user={user} />
-
-              {/* GroupMe setup */}
-              <div className="mt-8">
-                <GroupMeSetup />
+              {/* Settings Navigation */}
+              <div className="mb-6">
+                <div className="flex gap-2 border-b border-themed">
+                  {["Account", "My Tickets", "Integrations"].map((view) => (
+                    <button
+                      key={view}
+                      onClick={() => setCurrentSettingsView(view.toLowerCase().replace(" ", "_"))}
+                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
+                        currentSettingsView === view.toLowerCase().replace(" ", "_")
+                          ? "border-indigo-500 text-primary"
+                          : "border-transparent text-secondary hover:text-primary"
+                      }`}
+                    >
+                      {view}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              {/* Settings Content */}
+              {currentSettingsView === "account" && (
+                <Settings user={user} />
+              )}
+
+              {currentSettingsView === "my_tickets" && (
+                <MyTickets />
+              )}
+
+              {currentSettingsView === "integrations" && (
+                <div className="space-y-8">
+                  {/* GroupMe setup */}
+                  <GroupMeSetup />
+
+                  {/* Workvivo setup - temporarily disabled */}
+                  {/* <WorkvivoSetup /> */}
+                </div>
+              )}
             </CardBody>
           </Card>
         )}
@@ -1674,13 +1728,75 @@ function Shell({ user, onSignOut }) {
               <div className="text-sm text-secondary mb-4">
                 Welcome, admin user <span className="font-mono">sinaptick@gmail.com</span>.
               </div>
-              <UnapprovedUsersList db={db} />
-              <PendingChangesList db={db} />
-              <UserStatusSearch db={db} />
+              
+              {/* Admin Navigation */}
+              <div className="mb-6">
+                <div className="flex gap-2 border-b border-themed">
+                  {["Overview", "Support Tickets", "User Management", "Spam Protection"].map((view) => (
+                    <button
+                      key={view}
+                      onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
+                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
+                        currentAdminView === view.toLowerCase().replace(" ", "_")
+                          ? "border-indigo-500 text-primary"
+                          : "border-transparent text-secondary hover:text-primary"
+                      }`}
+                    >
+                      {view}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Admin Content */}
+              {currentAdminView === "overview" && (
+                <div className="space-y-6">
+                  <div className="text-sm text-secondary mb-4">
+                    Quick overview of system status and recent activity.
+                  </div>
+                  <UnapprovedUsersList db={db} />
+                  <PendingChangesList db={db} />
+                </div>
+              )}
+
+              {currentAdminView === "support_tickets" && (
+                <TicketQueue />
+              )}
+
+              {currentAdminView === "user_management" && (
+                <div className="space-y-6">
+                  <UserStatusSearch db={db} />
+                  <UnapprovedUsersList db={db} />
+                </div>
+              )}
+
+              {currentAdminView === "spam_protection" && (
+                <BlockedIPsManager />
+              )}
             </CardBody>
           </Card>
         )}
       </main>
+      
+      {/* Contact Us Link - Always visible at bottom */}
+      <footer className="p-4 border-t border-themed bg-secondary/50">
+        <div className="text-center">
+          <button
+            onClick={() => setShowContactUs(true)}
+            className="text-sm text-indigo-400 hover:text-indigo-300 underline"
+          >
+            📧 Contact Support
+          </button>
+          <span className="text-xs text-muted ml-2">
+            Need help? Have suggestions? Report bugs? We're here to help!
+          </span>
+        </div>
+      </footer>
+
+      {/* Contact Us Modal */}
+      {showContactUs && (
+        <ContactUs onClose={() => setShowContactUs(false)} />
+      )}
     </div>
   );
 }
@@ -1719,9 +1835,11 @@ function Landing() {
 // App Root
 // -----------------------------
 function AppInner() {
-  const { auth } = useFirebase();
+  const { auth, db } = useFirebase();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showTerms, setShowTerms] = useState(false);
+  const [userDoc, setUserDoc] = useState(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -1730,6 +1848,40 @@ function AppInner() {
     });
     return () => unsub();
   }, [auth]);
+
+  // Check if user needs to accept Terms of Service
+  useEffect(() => {
+    if (!user?.uid) {
+      setShowTerms(false);
+      setUserDoc(null);
+      return;
+    }
+
+    let mounted = true;
+    (async () => {
+      try {
+        const { getDoc, doc } = await import("firebase/firestore");
+        const userDocRef = doc(db, "users", user.uid);
+        const snap = await getDoc(userDocRef);
+        
+        if (mounted) {
+          const userData = snap.exists() ? snap.data() : null;
+          setUserDoc(userData);
+          
+          // Show Terms of Service if user hasn't accepted current version
+          const needsToAcceptTerms = !userData?.termsAccepted || userData?.termsVersion !== "2.1.0";
+          setShowTerms(needsToAcceptTerms);
+        }
+      } catch (error) {
+        console.error("Error checking ToS status:", error);
+        if (mounted) {
+          setShowTerms(true); // Default to showing terms if we can't check
+        }
+      }
+    })();
+    
+    return () => { mounted = false; };
+  }, [user, db]);
 
   if (loading) {
     return (
@@ -1741,7 +1893,38 @@ function AppInner() {
 
   if (!user) return <Landing />;
 
-  return <Shell user={user} onSignOut={() => signOut(auth)} />;
+  const handleTermsAccept = () => {
+    setShowTerms(false);
+    // Refresh user data
+    if (user?.uid) {
+      (async () => {
+        try {
+          const { getDoc, doc } = await import("firebase/firestore");
+          const snap = await getDoc(doc(db, "users", user.uid));
+          setUserDoc(snap.exists() ? snap.data() : null);
+        } catch (error) {
+          console.error("Error refreshing user data:", error);
+        }
+      })();
+    }
+  };
+
+  const handleTermsDecline = async () => {
+    await signOut(auth);
+  };
+
+  return (
+    <>
+      <Shell user={user} onSignOut={() => signOut(auth)} />
+      {showTerms && (
+        <TermsOfService 
+          user={user}
+          onAccept={handleTermsAccept}
+          onDecline={handleTermsDecline}
+        />
+      )}
+    </>
+  );
 }
 
 export default function App() {

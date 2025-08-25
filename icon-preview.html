@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Icon Preview</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #1a1a2e;
+            margin: 0;
+            gap: 40px;
+        }
+        .icon-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h3 {
+            text-align: center;
+            margin-top: 10px;
+            color: #333;
+        }
+        svg {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="icon-container">
+        <svg width="200" height="200" viewBox="0 0 24 24" fill="#4F46E5">
+            <!-- Message bubble with tail -->
+            <path d="M 3 2 
+                     C 1.9 2 1 2.9 1 4 
+                     L 1 18 
+                     C 1 19.1 1.9 20 3 20 
+                     L 5 20
+                     L 2 24
+                     L 8 20
+                     L 21 20 
+                     C 22.1 20 23 19.1 23 18 
+                     L 23 4 
+                     C 23 2.9 22.1 2 21 2 
+                     Z" />
+            
+            <!-- QR positioning squares - just white outlines -->
+            <g fill="none" stroke="white" stroke-width="1.5">
+                <!-- Top-left -->
+                <rect x="4" y="4" width="6" height="6"/>
+                <rect x="5.5" y="5.5" width="3" height="3"/>
+                
+                <!-- Top-right -->
+                <rect x="14" y="4" width="6" height="6"/>
+                <rect x="15.5" y="5.5" width="3" height="3"/>
+                
+                <!-- Bottom-left -->
+                <rect x="4" y="12" width="6" height="6"/>
+                <rect x="5.5" y="13.5" width="3" height="3"/>
+            </g>
+            
+            <!-- Key icon (diagonal) -->
+            <g fill="white" transform="translate(17, 15) rotate(45)">
+                <circle cx="1" cy="1" r="1.2" fill="none" stroke="white" stroke-width="0.8"/>
+                <rect x="1.8" y="0.7" width="2.5" height="0.6" fill="white"/>
+                <rect x="4" y="0.3" width="0.3" height="0.8" fill="white"/>
+                <rect x="4" y="1.4" width="0.5" height="0.3" fill="white"/>
+            </g>
+        </svg>
+        <h3>New Icon</h3>
+    </div>
+
+    <div class="icon-container">
+        <svg width="200" height="200" viewBox="0 0 24 24">
+            <rect width="24" height="24" rx="5" fill="#4F46E5"/>
+            <g fill="white">
+                <!-- Original QR pattern from your screenshot -->
+                <rect x="3" y="11" width="8" height="8"/>
+                <rect x="5" y="13" width="4" height="4" fill="#4F46E5"/>
+                
+                <rect x="3" y="3" width="8" height="8"/>
+                <rect x="5" y="5" width="4" height="4" fill="#4F46E5"/>
+                
+                <rect x="13" y="3" width="8" height="8"/>
+                <rect x="15" y="5" width="4" height="4" fill="#4F46E5"/>
+                
+                <!-- Bottom right dots pattern -->
+                <rect x="19" y="13" width="2" height="2"/>
+                <rect x="13" y="13" width="2" height="2"/>
+                <rect x="15" y="15" width="2" height="2"/>
+                <rect x="13" y="17" width="2" height="2"/>
+                <rect x="15" y="19" width="2" height="2"/>
+                <rect x="17" y="17" width="2" height="2"/>
+                <rect x="17" y="13" width="2" height="2"/>
+                <rect x="19" y="15" width="2" height="2"/>
+            </g>
+        </svg>
+        <h3>Original Icon</h3>
+    </div>
+</body>
+</html>

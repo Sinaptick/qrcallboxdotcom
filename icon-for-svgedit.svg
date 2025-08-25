@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <!-- Blue message bubble background -->
+  <path d="M 3 2 C 1.9 2 1 2.9 1 4 L 1 18 C 1 19.1 1.9 20 3 20 L 5 20 L 2 24 L 8 20 L 21 20 C 22.1 20 23 19.1 23 18 L 23 4 C 23 2.9 22.1 2 21 2 Z" fill="#4F46E5"/>
+  
+  <!-- QR positioning squares - white outlines -->
+  <g fill="none" stroke="white" stroke-width="1.5">
+    <!-- Top-left -->
+    <rect x="4" y="4" width="6" height="6"/>
+    <rect x="5.5" y="5.5" width="3" height="3"/>
+    
+    <!-- Top-right -->
+    <rect x="14" y="4" width="6" height="6"/>
+    <rect x="15.5" y="5.5" width="3" height="3"/>
+    
+    <!-- Bottom-left -->
+    <rect x="4" y="12" width="6" height="6"/>
+    <rect x="5.5" y="13.5" width="3" height="3"/>
+  </g>
+  
+  <!-- Key icon in bottom-right -->
+  <g transform="translate(17, 15) rotate(45)">
+    <circle cx="1" cy="1" r="1.2" fill="none" stroke="white" stroke-width="0.8"/>
+    <rect x="1.8" y="0.7" width="2.5" height="0.6" fill="white"/>
+    <rect x="4" y="0.3" width="0.3" height="0.8" fill="white"/>
+    <rect x="4" y="1.4" width="0.5" height="0.3" fill="white"/>
+  </g>
+</svg>

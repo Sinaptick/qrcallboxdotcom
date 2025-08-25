@@ -2,6 +2,43 @@
 
 A real-time assistance system that enables customers to scan QR codes and instantly notify staff for help in specific store areas. Built with React, Firebase, and includes AI-powered insights for analyzing customer assistance patterns.
 
+## 📁 Project Structure
+
+```
+qrcall/
+├── functions/                      # Firebase Cloud Functions
+│   ├── index.js                   # Main functions entry point
+│   ├── groupme-webhook.js         # GroupMe webhook handler
+│   ├── tickets.js                 # Ticket management functions
+│   ├── workvivo-automation.js     # Workvivo integration
+│   └── workvivo-monitor.js        # Workvivo monitoring
+├── public/                        # Static assets
+│   └── poster-template.png        # QR poster template image
+├── src/                           # React application source
+│   ├── lib/
+│   │   └── api.js                # API utility functions
+│   ├── app.jsx                   # Main application component
+│   ├── main.jsx                  # React entry point
+│   ├── firebaseClient.js         # Firebase configuration
+│   ├── ThemeContext.jsx          # Theme management
+│   ├── Button.jsx                # Reusable button component
+│   ├── PosterWithQR.jsx          # QR code poster generator
+│   ├── Heatmap.jsx               # Analytics heatmap visualization
+│   ├── InsightsAI.jsx            # AI-powered analytics insights
+│   ├── GroupMeSetup.jsx          # GroupMe integration setup
+│   ├── WorkvivoSetup.jsx         # Workvivo integration setup
+│   ├── TicketQueue.jsx           # Support ticket management
+│   ├── MyTickets.jsx             # User ticket dashboard
+│   ├── ContactUs.jsx             # Contact form component
+│   ├── UnapprovedUsersList.jsx   # Admin user approval interface
+│   └── index.css                 # Global styles
+├── firebase.json                  # Firebase project configuration
+├── firestore.rules               # Firestore security rules
+├── firestore.indexes.json        # Database indexes
+├── package.json                  # Dependencies and scripts
+└── vite.config.js                # Vite build configuration
+```
+
 ##  Features
 
 ### Core Functionality
@@ -159,11 +196,26 @@ firebase deploy
 
 ##  Security Features
 
+### Account Security
 - Email verification required for new accounts
 - Admin approval process for new users
 - Secure Firebase authentication
 - Input validation and sanitization
 - CORS configuration for API endpoints
+
+### Spam & Abuse Protection
+- **IP-based Rate Limiting**: 20 requests per minute per IP for QR scans, 10 requests per minute for other endpoints
+- **Duplicate Scan Prevention**: 60-second cooldown per QR code to prevent spam notifications
+- **Auto-blocking**: Automatic 24-hour IP blocks after 5 violations within an hour
+- **Manual IP Management**: Admin interface for blocking/unblocking specific IP addresses
+- **Comprehensive Logging**: All spam attempts and admin actions are logged for review
+- **Temporary vs Permanent Blocks**: Configurable block duration (1 hour to permanent)
+
+### Advanced Features
+- **Suspicious Activity Tracking**: System monitors patterns and escalates repeat offenders
+- **Admin Dashboard**: Real-time view of blocked IPs and spam logs
+- **Firestore Security Rules**: Database-level access controls for spam protection data
+- **Graceful Degradation**: Clear user feedback when rate limits are exceeded
 
 ##  Analytics Features
 
@@ -283,7 +335,26 @@ The current architecture is well-suited for significant growth and can handle en
 
 ##  Version History
 
-- **v0.0.1** - Initial release with core QR generation and assistance features
+### v0.1.0 - Enhanced Security & Setup (Latest)
+**New Features:**
+- 🛡️ **Advanced Spam Protection**: IP-based rate limiting, auto-blocking, and admin management
+- 🚀 **Store Setup Guide**: Comprehensive 4-step implementation wizard
+- 📊 **Admin Dashboard**: New "Spam Protection" tab with blocked IPs and activity logs
+- 🔧 **Enhanced Print Support**: Fixed QR code poster printing issues
+
+**Security Improvements:**
+- IP rate limiting (20 req/min for QR scans)
+- Auto-blocking after 5 violations/hour
+- 60-second duplicate scan prevention
+- Comprehensive spam activity logging
+- Admin tools for manual IP management
+
+**Bug Fixes:**
+- Fixed blank page printing for QR posters
+- Improved data URL handling for print functionality
+
+### v0.0.1 - Initial Release
+- Initial release with core QR generation and assistance features
 
 ---
 

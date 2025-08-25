@@ -6,8 +6,12 @@ import { onRequest } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 import { defineSecret } from "firebase-functions/params";
 
-// Import webhook handler
+// Import webhook handler and automation functions
 export { groupmeWebhook } from './groupme-webhook.js';
+export { workvivoConnect, workvivoConfig, workvivoDisconnect, workvivoCheckCompletion } from './workvivo-automation.js';
+export { workvivoMonitor } from './workvivo-monitor.js';
+export { submitTicket, getTickets, getMyTickets, getTicketDetails, respondToTicket, handleEmailReply, lookupTicket, updateTicketPriority } from './tickets.js';
+import { postToWorkvivo } from './workvivo-automation.js';
 
 // ===== Secrets (set with `firebase functions:secrets:set ...`) =====
 const GROUPME_CLIENT_ID = defineSecret("GROUPME_CLIENT_ID");
@@ -79,9 +83,77 @@ function sanitizeInput(input, maxLength = 100) {
   return input.trim().substring(0, maxLength).replace(/[<>\"'&]/g, '');
 }
 
-// Rate limiting (simple in-memory store for demo - use Redis in production)
+// Enhanced spam protection with IP blocking
 const rateLimitStore = new Map();
-function checkRateLimit(ip, maxRequests = 10, windowMs = 60000) {
+const suspiciousActivity = new Map(); // Track suspicious IPs
+
+// Check if IP is blocked in Firestore
+async function isIPBlocked(ip) {
+  try {
+    const blockedDoc = await db.collection('blocked_ips').doc(ip).get();
+    if (blockedDoc.exists) {
+      const data = blockedDoc.data();
+      // Check if block has expired
+      if (data.expiresAt && data.expiresAt.toMillis() < Date.now()) {
+        await db.collection('blocked_ips').doc(ip).delete();
+        return false;
+      }
+      return true;
+    }
+    return false;
+  } catch (error) {
+    logger.error('Error checking blocked IP:', error);
+    return false;
+  }
+}
+
+// Track suspicious activity and auto-block repeat offenders
+async function trackSuspiciousActivity(ip, reason) {
+  const now = Date.now();
+  
+  if (!suspiciousActivity.has(ip)) {
+    suspiciousActivity.set(ip, []);
+  }
+  
+  const activities = suspiciousActivity.get(ip);
+  const recentActivities = activities.filter(a => a.time > now - 3600000); // Last hour
+  recentActivities.push({ time: now, reason });
+  
+  // Auto-block after 5 violations in an hour
+  if (recentActivities.length >= 5) {
+    await db.collection('blocked_ips').doc(ip).set({
+      ip,
+      blockedAt: FieldValue.serverTimestamp(),
+      reason: 'Auto-blocked: Multiple spam attempts',
+      violations: recentActivities.map(a => a.reason),
+      expiresAt: new Date(now + 24 * 60 * 60 * 1000), // 24 hour block
+      autoBlocked: true
+    });
+    
+    // Log to spam_logs for admin review
+    await db.collection('spam_logs').add({
+      ip,
+      timestamp: FieldValue.serverTimestamp(),
+      action: 'auto_blocked',
+      violations: recentActivities.length,
+      details: recentActivities
+    });
+    
+    suspiciousActivity.delete(ip); // Clear after blocking
+    return true;
+  }
+  
+  suspiciousActivity.set(ip, recentActivities);
+  return false;
+}
+
+// Enhanced rate limiting with violation tracking
+async function checkRateLimit(ip, maxRequests = 10, windowMs = 60000) {
+  // First check if IP is blocked
+  if (await isIPBlocked(ip)) {
+    return { allowed: false, reason: 'blocked' };
+  }
+  
   const now = Date.now();
   const windowStart = now - windowMs;
   
@@ -90,16 +162,17 @@ function checkRateLimit(ip, maxRequests = 10, windowMs = 60000) {
   }
   
   const requests = rateLimitStore.get(ip);
-  // Remove old requests outside the window
   const validRequests = requests.filter(time => time > windowStart);
   
   if (validRequests.length >= maxRequests) {
-    return false; // Rate limit exceeded
+    // Track this as suspicious activity
+    await trackSuspiciousActivity(ip, `Rate limit exceeded: ${validRequests.length} requests in ${windowMs/1000}s`);
+    return { allowed: false, reason: 'rate_limit' };
   }
   
   validRequests.push(now);
   rateLimitStore.set(ip, validRequests);
-  return true;
+  return { allowed: true };
 }
 
 // ===== 1) Start OAuth: redirect user to GroupMe authorize =====
@@ -761,9 +834,13 @@ export const mint = onRequest({
   try {
     if (req.method !== "POST") return res.status(405).send("Use POST");
     
-    // Rate limiting
+    // Enhanced rate limiting with IP blocking
     const clientIp = req.ip || req.connection.remoteAddress;
-    if (!checkRateLimit(clientIp)) {
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      if (rateLimitResult.reason === 'blocked') {
+        return res.status(403).json({ error: "Your IP has been blocked due to suspicious activity. Please contact support." });
+      }
       return res.status(429).json({ error: "Too many requests. Please try again later." });
     }
     
@@ -816,9 +893,51 @@ export const s = onRequest({
   invoker: "public"
 }, async (req, res) => {
   try {
-    // Rate limiting
+    // Enhanced rate limiting with IP blocking for QR scans
     const clientIp = req.ip || req.connection.remoteAddress;
-    if (!checkRateLimit(clientIp, 20, 60000)) { // Higher limit for QR scans
+    const rateLimitResult = await checkRateLimit(clientIp, 20, 60000); // Higher limit for QR scans
+    if (!rateLimitResult.allowed) {
+      if (rateLimitResult.reason === 'blocked') {
+        return res.status(403).send(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>Access Blocked</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <style>
+                body { 
+                  font-family: system-ui, sans-serif; 
+                  text-align: center; 
+                  padding: 2rem; 
+                  background: #ef4444;
+                  color: white;
+                  min-height: 100vh;
+                  margin: 0;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                }
+                .container {
+                  background: white;
+                  color: #333;
+                  padding: 2rem;
+                  border-radius: 1rem;
+                  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+                  max-width: 400px;
+                }
+                h1 { color: #dc2626; margin-bottom: 1rem; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <h1>Access Blocked</h1>
+                <p>Your IP address has been temporarily blocked due to suspicious activity.</p>
+                <p>If you believe this is an error, please contact store management.</p>
+              </div>
+            </body>
+          </html>
+        `);
+      }
       return res.status(429).send("Too many requests. Please try again later.");
     }
 
@@ -917,6 +1036,7 @@ export const s = onRequest({
 
     // Send GroupMe notification
     await sendGroupMeNotification(tokenData.store, tokenData.area);
+    await sendWorkvivoNotification(tokenData.store, tokenData.area);
 
     // Redirect to assistance page or show success message
     res.send(`
@@ -1001,3 +1121,181 @@ async function sendGroupMeNotification(store, area) {
     logger.error("GroupMe notification error:", e.message);
   }
 }
+
+// ===== Helper: Send Workvivo notification =====
+async function sendWorkvivoNotification(store, area) {
+  try {
+    // Get all connected Workvivo users
+    const workvivoSnapshot = await db.collection("workvivo_config")
+      .where("connected", "==", true)
+      .where("selectedChannel", "!=", null)
+      .get();
+    
+    if (workvivoSnapshot.empty) {
+      logger.info("No connected Workvivo users found for notifications");
+      return;
+    }
+    
+    // Use local time zone (assuming PST/PDT for your location)
+    const now = new Date();
+    const localTime = new Date(now.getTime() - (4 * 60 * 60 * 1000)); // Subtract 4 hours to convert from UTC to PDT
+    const message = `🔔 Customer assistance needed in ${sanitizeInput(area, 50)} at ${localTime.toLocaleTimeString()}`;
+    
+    // Send notifications to all connected Workvivo users
+    for (const configDoc of workvivoSnapshot.docs) {
+      const userId = configDoc.id;
+      
+      try {
+        await postToWorkvivo(message, userId);
+        logger.info("Workvivo notification sent", { userId, area, store });
+      } catch (error) {
+        logger.error("Failed to send Workvivo notification", { userId, error: error.message });
+      }
+    }
+  } catch (e) {
+    logger.error("Workvivo notification error:", e.message);
+  }
+}
+
+// ===== Admin: Get blocked IPs list =====
+export const getBlockedIPs = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Authenticate user
+    const user = await authenticateUser(req);
+    
+    // Check if user is admin
+    if (!await isAdmin(user.uid)) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+    
+    // Get blocked IPs
+    const snapshot = await db.collection('blocked_ips').orderBy('blockedAt', 'desc').limit(100).get();
+    const blockedIPs = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      blockedIPs.push({
+        ip: doc.id,
+        ...data,
+        blockedAt: data.blockedAt?.toMillis(),
+        expiresAt: data.expiresAt?.toMillis()
+      });
+    });
+    
+    res.json({ blockedIPs });
+  } catch (error) {
+    logger.error('Error fetching blocked IPs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== Admin: Block/Unblock IP =====
+export const manageBlockedIP = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Authenticate user
+    const user = await authenticateUser(req);
+    
+    // Check if user is admin
+    if (!await isAdmin(user.uid)) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+    
+    const { action, ip, reason, duration } = req.body;
+    
+    if (!action || !ip) {
+      return res.status(400).json({ error: "Missing action or IP" });
+    }
+    
+    if (action === 'block') {
+      // Calculate expiration based on duration (hours)
+      const expiresAt = duration ? new Date(Date.now() + duration * 60 * 60 * 1000) : null;
+      
+      await db.collection('blocked_ips').doc(ip).set({
+        ip,
+        blockedAt: FieldValue.serverTimestamp(),
+        blockedBy: user.email,
+        reason: sanitizeInput(reason || 'Manual block by admin', 200),
+        expiresAt,
+        autoBlocked: false
+      });
+      
+      // Log the action
+      await db.collection('spam_logs').add({
+        ip,
+        timestamp: FieldValue.serverTimestamp(),
+        action: 'manual_block',
+        admin: user.email,
+        reason
+      });
+      
+      res.json({ success: true, message: `IP ${ip} has been blocked` });
+    } else if (action === 'unblock') {
+      await db.collection('blocked_ips').doc(ip).delete();
+      
+      // Log the action
+      await db.collection('spam_logs').add({
+        ip,
+        timestamp: FieldValue.serverTimestamp(),
+        action: 'manual_unblock',
+        admin: user.email
+      });
+      
+      res.json({ success: true, message: `IP ${ip} has been unblocked` });
+    } else {
+      res.status(400).json({ error: "Invalid action. Use 'block' or 'unblock'" });
+    }
+  } catch (error) {
+    logger.error('Error managing blocked IP:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== Admin: Get spam logs =====
+export const getSpamLogs = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Authenticate user
+    const user = await authenticateUser(req);
+    
+    // Check if user is admin
+    if (!await isAdmin(user.uid)) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+    
+    // Get spam logs from last 7 days
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const snapshot = await db.collection('spam_logs')
+      .where('timestamp', '>=', sevenDaysAgo)
+      .orderBy('timestamp', 'desc')
+      .limit(500)
+      .get();
+    
+    const logs = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      logs.push({
+        id: doc.id,
+        ...data,
+        timestamp: data.timestamp?.toMillis()
+      });
+    });
+    
+    res.json({ logs });
+  } catch (error) {
+    logger.error('Error fetching spam logs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
