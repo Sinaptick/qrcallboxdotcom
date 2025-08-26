@@ -294,6 +294,89 @@ export default function GroupMeSetup() {
     }
   };
 
+  // Sync missing bots from GroupMe to database
+  const syncMissingBots = async () => {
+    if (!groupmeUserId) {
+      setError("No GroupMe user ID found. Please reconnect.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      addDebug("Starting bot sync process...");
+
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/sync-bots`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_id: groupmeUserId
+        })
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const result = await res.json();
+      addDebug(`Sync result: ${JSON.stringify(result)}`);
+      
+      // Refresh existing bots list
+      await fetchExistingBots(groupmeUserId);
+      
+      addDebug(`Bot sync completed. Found ${result.synced || 0} bots to sync.`);
+      
+    } catch (err) {
+      const errorMsg = `Bot sync failed: ${err.message}`;
+      addDebug(errorMsg);
+      setError(errorMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Force refresh profile and connection
+  const refreshProfile = async () => {
+    if (!groupmeUserId) {
+      setError("No GroupMe user ID found. Please reconnect.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      addDebug("Refreshing GroupMe profile...");
+
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/profile?user_id=${groupmeUserId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        addDebug(`Profile fetch failed: HTTP ${res.status} - ${errorText}`);
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const profile = await res.json();
+      addDebug(`Profile refreshed: ${JSON.stringify(profile)}`);
+      
+    } catch (err) {
+      const errorMsg = `Profile refresh failed: ${err.message}`;
+      addDebug(errorMsg);
+      setError(errorMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const disconnect = () => {
     localStorage.removeItem(`groupme_user_id_${user?.uid}`);
     localStorage.removeItem(`groupme_bot_${user?.uid}`);
@@ -434,6 +517,39 @@ export default function GroupMeSetup() {
                     </p>
                   </div>
                 )}
+
+                {/* Bot sync and troubleshooting tools */}
+                <div className="mt-4 p-3 bg-blue-900/20 border border-blue-500/50 rounded-xl">
+                  <p className="text-sm font-medium text-blue-400 mb-2">🔧 Troubleshooting Tools:</p>
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      onClick={syncMissingBots}
+                      disabled={loading}
+                      className="text-xs px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+                    >
+                      {loading ? "Syncing..." : "Sync Missing Bots"}
+                    </button>
+                    <button
+                      onClick={refreshProfile}
+                      disabled={loading}
+                      className="text-xs px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg disabled:opacity-50"
+                    >
+                      {loading ? "Refreshing..." : "Refresh Profile"}
+                    </button>
+                    <button
+                      onClick={() => fetchExistingBots(groupmeUserId)}
+                      disabled={loading}
+                      className="text-xs px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg disabled:opacity-50"
+                    >
+                      {loading ? "Loading..." : "Reload Bots"}
+                    </button>
+                  </div>
+                  <p className="text-xs text-blue-300 mt-2">
+                    • <strong>Sync Missing Bots:</strong> Find bots in GroupMe that aren't in database<br/>
+                    • <strong>Refresh Profile:</strong> Fix "pattern not match" errors<br/>
+                    • <strong>Reload Bots:</strong> Refresh the bot list from database
+                  </p>
+                </div>
                 
                 <Button 
                   onClick={handleCreateBot} 

@@ -21,6 +21,8 @@
       { "source": "/api/groupme/createbot", "function": { "functionId": "groupmeCreateBot", "region": "us-central1" } },
       { "source": "/api/groupme/list-bots", "function": { "functionId": "groupmeListBots", "region": "us-central1" } },
       { "source": "/api/groupme/delete-bot", "function": { "functionId": "groupmeDeleteBot", "region": "us-central1" } },
+      { "source": "/api/groupme/sync-bots", "function": { "functionId": "groupmeSyncBots", "region": "us-central1" } },
+      { "source": "/api/groupme/profile", "function": { "functionId": "groupmeUserProfile", "region": "us-central1" } },
       { "source": "/api/groupme/webhook", "function": { "functionId": "groupmeWebhook", "region": "us-central1" } },
       { "source": "/api/workvivo/connect", "function": { "functionId": "workvivoConnect", "region": "us-central1" } },
       { "source": "/api/workvivo/configure", "function": { "functionId": "workvivoConfig", "region": "us-central1" } },
