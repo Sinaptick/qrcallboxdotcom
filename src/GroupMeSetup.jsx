@@ -308,15 +308,16 @@ export default function GroupMeSetup() {
 
       const token = await user.getIdToken();
       
-      // Call our backend to get detailed bot info
-      const res = await fetch(`/api/groupme/debug-bots`, {
+      // Call the sync endpoint with debug=true to get detailed info
+      const res = await fetch(`/api/groupme/sync-bots?debug=true`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          user_id: groupmeUserId
+          user_id: groupmeUserId,
+          debug: true
         })
       });
 
@@ -326,18 +327,40 @@ export default function GroupMeSetup() {
       }
 
       const result = await res.json();
-      addDebug(`GroupMe API bots: ${JSON.stringify(result.groupme_bots || [])}`);
-      addDebug(`Database bots: ${JSON.stringify(result.database_bots || [])}`);
-      addDebug(`Groups checked: ${JSON.stringify(result.groups || [])}`);
       
-      if (result.groupme_bots && result.groupme_bots.length > 0) {
-        addDebug(`⚠️ Found ${result.groupme_bots.length} bots in GroupMe:`);
-        result.groupme_bots.forEach((bot, idx) => {
-          addDebug(`  Bot ${idx + 1}: ${bot.name} in group ${bot.group_id} (Bot ID: ${bot.bot_id})`);
-        });
+      // Enhanced debug logging
+      if (result.debug_info) {
+        addDebug(`🔍 DETAILED DEBUG RESULTS:`);
+        addDebug(`GroupMe API bots: ${result.debug_info.total_groupme_bots}`);
+        addDebug(`Database bots: ${result.debug_info.total_database_bots}`);
+        addDebug(`Groups available: ${result.debug_info.groups_count}`);
+        
+        if (result.debug_info.groupme_bots && result.debug_info.groupme_bots.length > 0) {
+          addDebug(`⚠️ GROUPME BOTS FOUND:`);
+          result.debug_info.groupme_bots.forEach((bot, idx) => {
+            const groupName = result.debug_info.groups?.find(g => g.id === bot.group_id)?.name || 'Unknown Group';
+            addDebug(`  ${idx + 1}. "${bot.name}" in "${groupName}" (ID: ${bot.bot_id})`);
+            addDebug(`     Callback: ${bot.callback_url || 'No callback'}`);
+          });
+        } else {
+          addDebug("✅ No bots found in GroupMe API");
+        }
+        
+        if (result.debug_info.database_bots && result.debug_info.database_bots.length > 0) {
+          addDebug(`💾 DATABASE BOTS FOUND:`);
+          result.debug_info.database_bots.forEach((bot, idx) => {
+            addDebug(`  ${idx + 1}. "${bot.name}" (Bot ID: ${bot.bot_id}, Group: ${bot.group_id})`);
+          });
+        } else {
+          addDebug("📭 No bots found in database");
+        }
       } else {
-        addDebug("ℹ️ No bots found in GroupMe API response");
+        // Fallback to regular sync result
+        addDebug(`Sync result: ${JSON.stringify(result)}`);
       }
+      
+      // Refresh existing bots list
+      await fetchExistingBots(groupmeUserId);
       
     } catch (err) {
       const errorMsg = `Debug failed: ${err.message}`;

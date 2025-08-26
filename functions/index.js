@@ -962,7 +962,8 @@ export const groupmeSyncBots = onRequest({
       return res.status(403).send("Access denied");
     }
     
-    logger.info("Starting bot sync with detailed debugging", { user_id, firebase_uid: decodedToken.uid });
+    const isDebugMode = req.body?.debug === true || req.query?.debug === "true";
+    logger.info("Starting bot sync with detailed debugging", { user_id, firebase_uid: decodedToken.uid, debug_mode: isDebugMode });
     
     // Get bots from GroupMe API
     const groupmeResponse = await fetch(`https://api.groupme.com/v3/bots?token=${tokenData.access_token}`);
@@ -973,6 +974,24 @@ export const groupmeSyncBots = onRequest({
     
     const groupmeData = await groupmeResponse.json();
     const groupmeBots = groupmeData.response || [];
+
+    // Get groups for debug info if in debug mode
+    let groups = [];
+    if (isDebugMode) {
+      try {
+        const groupsResponse = await fetch(`https://api.groupme.com/v3/groups?token=${tokenData.access_token}`);
+        if (groupsResponse.ok) {
+          const groupsData = await groupsResponse.json();
+          groups = (groupsData.response || []).map(g => ({
+            id: g.id,
+            name: g.name,
+            members_count: g.members ? g.members.length : 0
+          }));
+        }
+      } catch (e) {
+        logger.warn("Failed to fetch groups for debug", { error: e.message });
+      }
+    }
     
     // Get existing bots from our database
     const botsSnapshot = await db.collection("groupme_bots")
@@ -1052,12 +1071,43 @@ export const groupmeSyncBots = onRequest({
     
     logger.info("Bot sync completed", { synced_count: syncedCount });
     
-    res.json({ 
+    const response = { 
       success: true, 
       synced: syncedCount,
       total_groupme_bots: groupmeBots.length,
       total_database_bots: botsSnapshot.size
-    });
+    };
+
+    // Add debug info if requested
+    if (isDebugMode) {
+      const databaseBots = [];
+      botsSnapshot.forEach(doc => {
+        const data = doc.data();
+        databaseBots.push({
+          id: doc.id,
+          bot_id: data.bot_id,
+          group_id: data.group_id,
+          name: data.name,
+          store: data.store
+        });
+      });
+
+      response.debug_info = {
+        total_groupme_bots: groupmeBots.length,
+        total_database_bots: botsSnapshot.size,
+        groups_count: groups.length,
+        groupme_bots: groupmeBots.map(bot => ({
+          bot_id: bot.bot_id,
+          group_id: bot.group_id,
+          name: bot.name,
+          callback_url: bot.callback_url
+        })),
+        database_bots: databaseBots,
+        groups: groups
+      };
+    }
+    
+    res.json(response);
   } catch (e) {
     logger.error("Sync bots error:", e.message, e.stack);
     res.status(500).send(`Error syncing bots: ${e.message}`);
