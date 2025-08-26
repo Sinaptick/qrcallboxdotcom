@@ -194,14 +194,43 @@ export const groupmeStart = onRequest(
       // Optional: accept a `state` param you pass through (e.g., your userId)
       const state = req.query.state ? sanitizeInput(String(req.query.state), 50) : "";
       const clientId = GROUPME_CLIENT_ID.value().trim();
+      
+      // Check if force_login is requested for fresh authentication
+      const forceLogin = req.query.force_login === 'true';
 
-      // GroupMe OAuth - Use Authorization Code flow since that's what GroupMe actually sends
+      // GroupMe OAuth - Use Authorization Code flow with cache busting
       const timestamp = Date.now();
       const randomId = Math.random().toString(36).substring(2);
-      // Note: GroupMe will use the current logged-in user. Users should log out of GroupMe first if they want to switch accounts
-      const authorizeUrl = `https://oauth.groupme.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(BASE_CALLBACK)}${state ? `&state=${encodeURIComponent(state)}` : ''}&_t=${timestamp}&_r=${randomId}`;
+      const clientTimestamp = req.query.t || timestamp;
+      const clientRandom = req.query.r || randomId;
+      
+      // Build authorize URL with aggressive cache-busting parameters
+      let authorizeUrl = `https://oauth.groupme.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(BASE_CALLBACK)}`;
+      
+      if (state) {
+        authorizeUrl += `&state=${encodeURIComponent(state)}`;
+      }
+      
+      // Add cache busting and fresh login parameters
+      authorizeUrl += `&_t=${timestamp}&_r=${randomId}&ct=${clientTimestamp}&cr=${clientRandom}`;
+      
+      if (forceLogin) {
+        authorizeUrl += `&force_login=1&fresh=1`;
+      }
 
-      logger.info("Redirecting to GroupMe OAuth", { authorizeUrl: authorizeUrl.substring(0, 100) + "...", timestamp });
+      // Set headers to prevent caching of the OAuth redirect
+      res.set({
+        'Cache-Control': 'no-cache, no-store, must-revalidate, private',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
+      
+      logger.info("Redirecting to GroupMe OAuth", { 
+        authorizeUrl: authorizeUrl.substring(0, 100) + "...", 
+        timestamp, 
+        forceLogin,
+        state: state.substring(0, 10) + "..."
+      });
       res.redirect(authorizeUrl);
     } catch (e) {
       logger.error("OAuth start error:", e.message);
@@ -773,7 +802,61 @@ export const groupmeCreateBot = onRequest({
     const { access_token } = tokenData;
     logger.info("Using access token", { hasToken: !!access_token });
 
-    const callbackUrl = "https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook";
+    const callbackUrl = `https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook?group_id=${sanitizedGroupId}`;
+    
+    // Check for existing bots in this group for this user and delete them to prevent callback URL conflicts
+    logger.info("Checking for existing bots in group", { group_id: sanitizedGroupId, user_id });
+    try {
+      const existingBotsSnapshot = await db.collection("groupme_bots")
+        .where("user_id", "==", String(user_id))
+        .where("group_id", "==", sanitizedGroupId)
+        .get();
+      
+      if (!existingBotsSnapshot.empty) {
+        logger.info(`Found ${existingBotsSnapshot.size} existing bots in group, deleting them first`);
+        
+        for (const botDoc of existingBotsSnapshot.docs) {
+          const botData = botDoc.data();
+          logger.info("Deleting existing bot", { bot_id: botData.bot_id, name: botData.name });
+          
+          try {
+            // Delete from GroupMe API
+            const deleteResp = await fetch(`https://api.groupme.com/v3/bots/destroy`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Access-Token": access_token
+              },
+              body: JSON.stringify({ bot_id: botData.bot_id })
+            });
+            
+            if (deleteResp.ok) {
+              logger.info("Bot deleted from GroupMe API", { bot_id: botData.bot_id });
+            } else {
+              logger.warn("Failed to delete bot from GroupMe API", { 
+                bot_id: botData.bot_id, 
+                status: deleteResp.status 
+              });
+            }
+            
+            // Delete from our database regardless of API response
+            await db.collection("groupme_bots").doc(botData.bot_id).delete();
+            logger.info("Bot deleted from database", { bot_id: botData.bot_id });
+            
+          } catch (deleteError) {
+            logger.error("Error deleting existing bot", { 
+              bot_id: botData.bot_id, 
+              error: deleteError.message 
+            });
+            // Continue with creation even if deletion fails
+          }
+        }
+      }
+    } catch (checkError) {
+      logger.warn("Error checking for existing bots", { error: checkError.message });
+      // Continue with creation even if check fails
+    }
+    
     const botRequest = {
       bot: {
         name: sanitizedName,
@@ -782,7 +865,7 @@ export const groupmeCreateBot = onRequest({
       }
     };
     
-    logger.info("Calling GroupMe API", { botRequest });
+    logger.info("Calling GroupMe API to create bot", { botRequest });
 
     const resp = await fetch("https://api.groupme.com/v3/bots", {
       method: "POST",
@@ -799,16 +882,39 @@ export const groupmeCreateBot = onRequest({
     
     if (!resp.ok) {
       logger.error("Create bot failed", { status: resp.status, json });
+      // If we still get a callback URL conflict, provide a helpful error message
+      if (json?.meta?.errors?.some(error => error.includes("already registered"))) {
+        return res.status(400).send(`Failed to create bot: A bot with this callback URL already exists in the group. Please try refreshing the page and try again, or contact support if the issue persists.`);
+      }
       return res.status(400).send(`Failed to create bot: ${JSON.stringify(json)}`);
     }
 
     // Store bot information for later use
     if (json.response?.bot) {
+      // Get user's store number from their profile
+      const userDoc = await db.collection("users").doc(decodedToken.uid).get();
+      const userData = userDoc.exists ? userDoc.data() : {};
+      
+      // Determine store based on user's access level
+      let userStore = null;
+      if (userData.access === 'store' && userData.storeNumber) {
+        // Store-level users use their assigned store number
+        userStore = userData.storeNumber;
+      } else if (['market', 'region', 'business_unit'].includes(userData.access) && userData.homeStore) {
+        // Market/Region/BU users use their selected home store
+        userStore = userData.homeStore;
+      }
+      
+      const groupName = json.response.bot.group_name || "";
+      
       await db.collection("groupme_bots").doc(json.response.bot.bot_id).set({
         bot_id: json.response.bot.bot_id,
         group_id: sanitizedGroupId,
         user_id: String(user_id),
         name: json.response.bot.name,
+        store: userStore, // Use user's configured store number
+        group_name: groupName, // Store group name for reference
+        firebase_uid: decodedToken.uid,
         createdAt: FieldValue.serverTimestamp()
       });
     }
@@ -821,6 +927,618 @@ export const groupmeCreateBot = onRequest({
     }
     // More specific error message for debugging
     res.status(500).send(`Error creating bot: ${e.message}`);
+  }
+});
+
+// ===== 3c) Sync missing bots from GroupMe API to database =====
+export const groupmeSyncBots = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    if (!checkRateLimit(clientIp)) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    const { user_id } = req.body || {};
+    if (!user_id) return res.status(400).send("Missing user_id");
+    
+    // Verify user owns this GroupMe account
+    const userTokenDoc = await db.collection("groupme_tokens").doc(String(user_id)).get();
+    if (!userTokenDoc.exists) {
+      return res.status(404).send("No token on file");
+    }
+    
+    const tokenData = userTokenDoc.data();
+    if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Access denied");
+    }
+    
+    logger.info("Starting bot sync with detailed debugging", { user_id, firebase_uid: decodedToken.uid });
+    
+    // Get bots from GroupMe API
+    const groupmeResponse = await fetch(`https://api.groupme.com/v3/bots?token=${tokenData.access_token}`);
+    if (!groupmeResponse.ok) {
+      logger.error("Failed to fetch bots from GroupMe API", { status: groupmeResponse.status });
+      return res.status(500).send("Failed to fetch bots from GroupMe");
+    }
+    
+    const groupmeData = await groupmeResponse.json();
+    const groupmeBots = groupmeData.response || [];
+    
+    // Get existing bots from our database
+    const botsSnapshot = await db.collection("groupme_bots")
+      .where("user_id", "==", String(user_id))
+      .get();
+    
+    const existingBotIds = new Set();
+    botsSnapshot.forEach(doc => {
+      const data = doc.data();
+      existingBotIds.add(data.bot_id);
+    });
+    
+    // Find missing bots and sync them
+    let syncedCount = 0;
+    for (const groupmeBot of groupmeBots) {
+      if (!existingBotIds.has(groupmeBot.bot_id)) {
+        // This bot exists in GroupMe but not in our database - add it
+        logger.info("Syncing missing bot to database", { 
+          bot_id: groupmeBot.bot_id, 
+          name: groupmeBot.name,
+          group_id: groupmeBot.group_id,
+          group_name: groupmeBot.group_name,
+          callback_url: groupmeBot.callback_url
+        });
+        
+        // Get user's store number from their profile
+        const userDoc = await db.collection("users").doc(decodedToken.uid).get();
+        const userData = userDoc.exists ? userDoc.data() : {};
+        
+        // Extract store number from group name (e.g., "2988 Call Box Chat" -> "2988")
+        const groupName = groupmeBot.group_name || "";
+        const storeMatch = groupName.match(/^(\d{3,4})\s/);
+        const groupStore = storeMatch ? storeMatch[1] : null;
+        
+        logger.info("Extracted store info", {
+          groupName,
+          storeMatch: storeMatch ? storeMatch[0] : null,
+          groupStore,
+          userStoreNumber: userData.storeNumber
+        });
+        
+        // Sanitize bot_id for Firestore document ID (remove invalid characters)
+        const sanitizedBotId = groupmeBot.bot_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+        
+        logger.info("About to write bot to database", {
+          sanitizedBotId,
+          originalBotId: groupmeBot.bot_id,
+          store: groupStore || userData.storeNumber || null,
+          firebase_uid: decodedToken.uid
+        });
+        
+        try {
+          await db.collection("groupme_bots").doc(sanitizedBotId).set({
+            bot_id: groupmeBot.bot_id,
+            group_id: groupmeBot.group_id,
+            user_id: String(user_id),
+            name: groupmeBot.name,
+            store: groupStore || userData.storeNumber || null, // Use group's store number for notifications
+            firebase_uid: decodedToken.uid,
+            createdAt: FieldValue.serverTimestamp(),
+            synced: true // Mark as synced from GroupMe API
+          });
+          
+          logger.info("Successfully wrote bot to database", { sanitizedBotId });
+          syncedCount++;
+        } catch (writeError) {
+          logger.error("Failed to write bot to database", {
+            error: writeError.message,
+            sanitizedBotId,
+            originalBotId: groupmeBot.bot_id,
+            writeError
+          });
+          throw writeError;
+        }
+      }
+    }
+    
+    logger.info("Bot sync completed", { synced_count: syncedCount });
+    
+    res.json({ 
+      success: true, 
+      synced: syncedCount,
+      total_groupme_bots: groupmeBots.length,
+      total_database_bots: botsSnapshot.size
+    });
+  } catch (e) {
+    logger.error("Sync bots error:", e.message, e.stack);
+    res.status(500).send(`Error syncing bots: ${e.message}`);
+  }
+});
+
+// ===== Fix existing bot store numbers =====
+export const groupmeFixBotStores = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    if (!checkRateLimit(clientIp)) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    const { user_id } = req.body || {};
+    if (!user_id) return res.status(400).send("Missing user_id");
+    
+    // Verify user owns this GroupMe account
+    const userTokenDoc = await db.collection("groupme_tokens").doc(String(user_id)).get();
+    if (!userTokenDoc.exists) {
+      return res.status(404).send("No token on file");
+    }
+    
+    const tokenData = userTokenDoc.data();
+    if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Access denied");
+    }
+    
+    logger.info("Starting bot store number fix", { user_id, firebase_uid: decodedToken.uid });
+    
+    // Get bots from GroupMe API to get group names
+    const groupmeResponse = await fetch(`https://api.groupme.com/v3/bots?token=${tokenData.access_token}`);
+    if (!groupmeResponse.ok) {
+      logger.error("Failed to fetch bots from GroupMe API", { status: groupmeResponse.status });
+      return res.status(500).send("Failed to fetch bots from GroupMe");
+    }
+    
+    const groupmeData = await groupmeResponse.json();
+    const groupmeBots = groupmeData.response || [];
+    
+    let fixedCount = 0;
+    for (const groupmeBot of groupmeBots) {
+      // Extract store number from group name
+      const groupName = groupmeBot.group_name || "";
+      const storeMatch = groupName.match(/^(\d{3,4})\s/);
+      const groupStore = storeMatch ? storeMatch[1] : null;
+      
+      if (groupStore) {
+        // Update the bot record in our database
+        const botRef = db.collection("groupme_bots").doc(groupmeBot.bot_id);
+        const botDoc = await botRef.get();
+        
+        if (botDoc.exists) {
+          const currentData = botDoc.data();
+          if (currentData.store !== groupStore) {
+            await botRef.update({
+              store: groupStore,
+              group_name: groupName,
+              fixedAt: FieldValue.serverTimestamp()
+            });
+            
+            logger.info("Fixed bot store number", { 
+              bot_id: groupmeBot.bot_id, 
+              old_store: currentData.store,
+              new_store: groupStore,
+              group_name: groupName
+            });
+            
+            fixedCount++;
+          }
+        }
+      }
+    }
+    
+    logger.info("Bot store number fix completed", { fixed_count: fixedCount });
+    
+    res.json({ 
+      success: true, 
+      fixed: fixedCount,
+      message: `Fixed ${fixedCount} bot store numbers`
+    });
+  } catch (e) {
+    logger.error("Fix bot stores error:", e.message, e.stack);
+    res.status(500).send(`Error fixing bot stores: ${e.message}`);
+  }
+});
+
+// ===== 3c) Get GroupMe user profile =====
+export const groupmeUserProfile = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    if (!checkRateLimit(clientIp, 10, 60000)) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    const groupmeUserId = requiredQuery(req, "user_id");
+    
+    // Verify user owns this GroupMe account or is admin
+    const userTokenDoc = await db.collection("groupme_tokens").doc(groupmeUserId).get();
+    if (!userTokenDoc.exists) {
+      return res.status(404).send("No token on file");
+    }
+    
+    const tokenData = userTokenDoc.data();
+    if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Access denied");
+    }
+    
+    // Get user profile from GroupMe API
+    const profileResponse = await fetch(`https://api.groupme.com/v3/users/me?token=${tokenData.access_token}`);
+    
+    if (!profileResponse.ok) {
+      logger.error("Failed to fetch GroupMe user profile", { status: profileResponse.status });
+      return res.status(500).send("Failed to fetch user profile");
+    }
+    
+    const profileData = await profileResponse.json();
+    
+    // Return relevant user profile information
+    res.json({
+      user: {
+        id: profileData.response.user_id,
+        name: profileData.response.name,
+        nickname: profileData.response.nickname,
+        email: profileData.response.email,
+        image_url: profileData.response.image_url
+      }
+    });
+    
+  } catch (e) {
+    logger.error("User profile error:", e.message);
+    res.status(500).send("Error fetching user profile");
+  }
+});
+
+// ===== 4a) List user's bots =====
+export const groupmeListBots = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    if (!checkRateLimit(clientIp)) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    const groupmeUserId = requiredQuery(req, "user_id");
+    
+    // Verify user owns this GroupMe account or is admin
+    const userTokenDoc = await db.collection("groupme_tokens").doc(groupmeUserId).get();
+    if (!userTokenDoc.exists) {
+      return res.status(404).send("No token on file");
+    }
+    
+    const tokenData = userTokenDoc.data();
+    if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Access denied");
+    }
+    
+    // Get all bots for this user from our database
+    const botsSnapshot = await db.collection("groupme_bots")
+      .where("user_id", "==", groupmeUserId)
+      .get();
+    
+    const databaseBots = [];
+    botsSnapshot.forEach(doc => {
+      databaseBots.push({ id: doc.id, ...doc.data() });
+    });
+    
+    // Also fetch bots directly from GroupMe API to detect discrepancies
+    let groupmeBots = [];
+    try {
+      const groupmeResponse = await fetch(`https://api.groupme.com/v3/bots?token=${tokenData.access_token}`);
+      if (groupmeResponse.ok) {
+        const groupmeData = await groupmeResponse.json();
+        groupmeBots = groupmeData.response || [];
+        logger.info("Fetched bots from GroupMe API", { count: groupmeBots.length });
+      } else {
+        logger.warn("Failed to fetch bots from GroupMe API", { status: groupmeResponse.status });
+      }
+    } catch (apiError) {
+      logger.error("Error fetching bots from GroupMe API", { error: apiError.message });
+    }
+    
+    // Compare and identify missing bots
+    const missingFromDatabase = [];
+    for (const groupmeBot of groupmeBots) {
+      const foundInDb = databaseBots.find(dbBot => dbBot.bot_id === groupmeBot.bot_id);
+      if (!foundInDb) {
+        missingFromDatabase.push({
+          bot_id: groupmeBot.bot_id,
+          name: groupmeBot.name,
+          group_id: groupmeBot.group_id,
+          user_id: groupmeUserId,
+          source: 'groupme_api_only'
+        });
+      }
+    }
+    
+    if (missingFromDatabase.length > 0) {
+      logger.warn("Found bots in GroupMe API that are missing from database", { 
+        missing: missingFromDatabase 
+      });
+    }
+    
+    // Return both database bots and any missing bots found in GroupMe
+    const allBots = [...databaseBots, ...missingFromDatabase];
+    
+    res.json({ 
+      bots: allBots,
+      debug: {
+        database_count: databaseBots.length,
+        groupme_count: groupmeBots.length,
+        missing_from_db: missingFromDatabase.length
+      }
+    });
+  } catch (e) {
+    logger.error("List bots error:", e.message);
+    res.status(500).send("Error listing bots");
+  }
+});
+
+// ===== 4b) Delete a bot from a group =====
+export const groupmeDeleteBot = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    if (!checkRateLimit(clientIp)) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user
+    logger.info("Authenticating user for bot deletion...");
+    const decodedToken = await authenticateUser(req);
+    logger.info("User authenticated", { uid: decodedToken.uid });
+    
+    const { user_id, bot_id } = req.body || {};
+    logger.info("Bot deletion request", { user_id, bot_id });
+    if (!user_id || !bot_id) return res.status(400).send("Missing user_id or bot_id");
+    
+    // Verify user owns this GroupMe account or is admin
+    const userTokenDoc = await db.collection("groupme_tokens").doc(String(user_id)).get();
+    if (!userTokenDoc.exists) {
+      logger.error("No GroupMe token found", { user_id });
+      return res.status(404).send("No token on file");
+    }
+    
+    const tokenData = userTokenDoc.data();
+    if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Access denied");
+    }
+    
+    const { access_token } = tokenData;
+    
+    // Delete bot from GroupMe
+    logger.info("Deleting bot from GroupMe", { bot_id });
+    const resp = await fetch(`https://api.groupme.com/v3/bots/destroy`, {
+      method: "POST",
+      headers: { 
+        "X-Access-Token": access_token,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ bot_id })
+    });
+    
+    const text = await resp.text();
+    logger.info("GroupMe delete response", { status: resp.status, text });
+    
+    // Delete bot from our database
+    await db.collection("groupme_bots").doc(bot_id).delete();
+    logger.info("Bot deleted from database", { bot_id });
+    
+    res.json({ success: true, message: "Bot deleted successfully" });
+  } catch (e) {
+    logger.error("Delete bot error:", e.message, e.stack);
+    res.status(500).send(`Error deleting bot: ${e.message}`);
+  }
+});
+
+// ===== 4c) Admin: Get all GroupMe data for a user =====
+export const groupmeAdminUserData = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { firebase_uid } = req.query;
+    if (!firebase_uid) return res.status(400).send("Missing firebase_uid");
+    
+    logger.info("Admin fetching GroupMe data for user", { firebase_uid, admin: decodedToken.uid });
+    
+    // Get user's GroupMe tokens
+    const tokensSnapshot = await db.collection("groupme_tokens")
+      .where("firebase_uid", "==", firebase_uid)
+      .get();
+    
+    const tokens = [];
+    tokensSnapshot.forEach(doc => {
+      const data = doc.data();
+      tokens.push({
+        groupme_user_id: doc.id,
+        firebase_uid: data.firebase_uid,
+        created_at: data.created_at,
+        updated_at: data.updatedAt,
+        user_name: data.user_name || null,
+        // Don't expose access_token for security
+        has_token: !!data.access_token
+      });
+    });
+    
+    // Get user's bots from database
+    const botsSnapshot = await db.collection("groupme_bots")
+      .where("firebase_uid", "==", firebase_uid)
+      .get();
+    
+    const bots = [];
+    botsSnapshot.forEach(doc => {
+      const data = doc.data();
+      bots.push({
+        bot_id: data.bot_id,
+        name: data.name,
+        group_id: data.group_id,
+        store: data.store,
+        user_id: data.user_id,
+        created_at: data.createdAt,
+        synced: data.synced || false
+      });
+    });
+    
+    // Get webhook activity logs for this user's groups (broader search)
+    let webhookLogs = [];
+    const groupIds = bots.map(bot => bot.group_id);
+    
+    try {
+      // Get recent webhook activity (last 30 days)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      if (groupIds.length > 0) {
+        // Search by group IDs to catch all activity in groups where user has bots
+        const webhookSnapshot = await db.collection("groupme_webhook_logs")
+          .where("group_id", "in", groupIds.slice(0, 10)) // Firestore limit
+          .where("timestamp", ">=", thirtyDaysAgo)
+          .orderBy("timestamp", "desc")
+          .limit(100)
+          .get();
+        
+        webhookSnapshot.forEach(doc => {
+          const data = doc.data();
+          webhookLogs.push({
+            id: doc.id,
+            timestamp: data.timestamp,
+            group_id: data.group_id,
+            sender_type: data.sender_type,
+            sender_name: data.sender_name,
+            message_type: data.message_type,
+            user_id: data.user_id,
+            text_preview: data.text_preview,
+            attachments_count: data.attachments_count || 0,
+            system_message: data.system_message || false
+          });
+        });
+      }
+    } catch (webhookError) {
+      logger.error("Error fetching webhook logs", { error: webhookError.message });
+      // Continue without webhook logs if there's an error
+    }
+    
+    // Get bot post activity (outbound notifications)
+    let botPosts = [];
+    try {
+      if (firebase_uid) {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        const postsSnapshot = await db.collection("groupme_bot_posts")
+          .where("firebase_uid", "==", firebase_uid)
+          .where("timestamp", ">=", thirtyDaysAgo)
+          .orderBy("timestamp", "desc")
+          .limit(50)
+          .get();
+        
+        postsSnapshot.forEach(doc => {
+          const data = doc.data();
+          botPosts.push({
+            id: doc.id,
+            timestamp: data.timestamp,
+            bot_id: data.bot_id,
+            group_id: data.group_id,
+            store: data.store,
+            area: data.area,
+            message: data.message,
+            success: data.success,
+            response_status: data.response_status
+          });
+        });
+      }
+    } catch (postsError) {
+      logger.error("Error fetching bot posts", { error: postsError.message });
+    }
+    
+    // Get user's profile from users collection for additional context
+    const userDoc = await db.collection("users").doc(firebase_uid).get();
+    const userData = userDoc.exists ? userDoc.data() : null;
+    
+    res.json({
+      firebase_uid,
+      user_profile: userData ? {
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        email: userData.email,
+        storeNumber: userData.storeNumber,
+        homeStore: userData.homeStore,
+        allowedStores: userData.allowedStores
+      } : null,
+      groupme_data: {
+        tokens,
+        bots,
+        recent_webhook_activity: webhookLogs,
+        recent_bot_posts: botPosts,
+        summary: {
+          total_tokens: tokens.length,
+          total_bots: bots.length,
+          stores_with_bots: [...new Set(bots.filter(b => b.store).map(b => b.store))],
+          recent_activity_count: webhookLogs.length,
+          recent_posts_count: botPosts.length,
+          successful_posts: botPosts.filter(p => p.success).length,
+          failed_posts: botPosts.filter(p => !p.success).length
+        }
+      }
+    });
+    
+  } catch (e) {
+    logger.error("Admin GroupMe data fetch error:", e.message);
+    res.status(500).send(`Error fetching GroupMe data: ${e.message}`);
   }
 });
 
@@ -849,6 +1567,14 @@ export const mint = onRequest({
       return res.status(401).json({ error: "Invalid API key" });
     }
     
+    // Authenticate user
+    let decodedToken;
+    try {
+      decodedToken = await authenticateUser(req);
+    } catch (error) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    
     const { store, area } = req.body || {};
     if (!store || !area) {
       return res.status(400).json({ error: "Missing store or area" });
@@ -865,6 +1591,29 @@ export const mint = onRequest({
     if (!/^[a-zA-Z0-9\s._-]{1,50}$/.test(sanitizedArea)) {
       return res.status(400).json({ error: "Invalid area name" });
     }
+    
+    // Validate store access for non-admin users
+    const userIsAdmin = await isAdmin(decodedToken.uid);
+    if (!userIsAdmin) {
+      const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+      if (!userDoc.exists) {
+        return res.status(403).json({ error: "User not found" });
+      }
+      
+      const userData = userDoc.data();
+      if (userData.approved !== true) {
+        return res.status(403).json({ error: "Account not approved" });
+      }
+      
+      // Check if user has access to this store
+      const allowedStores = userData.allowedStores || (userData.storeNumber ? [userData.storeNumber] : []);
+      const hasGeneralAccess = allowedStores.includes(sanitizedStore);
+      const hasHomeStoreAccess = userData.homeStore && userData.homeStore === sanitizedStore;
+      
+      if (!hasGeneralAccess && !hasHomeStoreAccess) {
+        return res.status(403).json({ error: "Access denied for this store" });
+      }
+    }
 
     // Generate unique token
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
@@ -874,6 +1623,7 @@ export const mint = onRequest({
       store: sanitizedStore,
       area: sanitizedArea,
       token,
+      createdBy: decodedToken.uid,
       createdAt: FieldValue.serverTimestamp(),
       scanned: false,
       scanCount: 0
@@ -1090,10 +1840,16 @@ export const s = onRequest({
 
 // ===== Helper: Send GroupMe notification =====
 async function sendGroupMeNotification(store, area) {
-  // Note: store parameter is kept for backwards compatibility but not used in message
   try {
-    // Get all bots to find ones that should receive this notification
-    const botsSnapshot = await db.collection("groupme_bots").get();
+    // Get only bots for the specific store
+    const botsSnapshot = await db.collection("groupme_bots")
+      .where("store", "==", store)
+      .get();
+    
+    if (botsSnapshot.empty) {
+      logger.info(`No GroupMe bots found for store ${store}`);
+      return;
+    }
     
     for (const botDoc of botsSnapshot.docs) {
       const botData = botDoc.data();
@@ -1105,10 +1861,10 @@ async function sendGroupMeNotification(store, area) {
       // Use local time zone (assuming PST/PDT for your location)
       const now = new Date();
       const localTime = new Date(now.getTime() - (4 * 60 * 60 * 1000)); // Subtract 4 hours to convert from UTC to PDT
-      const message = `Customer assistance needed in ${sanitizeInput(area, 50)} at ${localTime.toLocaleTimeString()}`;
+      const message = `Store ${sanitizeInput(store, 10)}: Customer assistance needed in ${sanitizeInput(area, 50)} at ${localTime.toLocaleTimeString()}`;
       
       // Send message via bot
-      await fetch("https://api.groupme.com/v3/bots/post", {
+      const postResponse = await fetch("https://api.groupme.com/v3/bots/post", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1116,6 +1872,23 @@ async function sendGroupMeNotification(store, area) {
           text: message
         })
       });
+
+      // Log bot post activity for admin tracking
+      try {
+        await db.collection("groupme_bot_posts").add({
+          timestamp: FieldValue.serverTimestamp(),
+          bot_id: botData.bot_id,
+          group_id: botData.group_id,
+          store: store,
+          area: area,
+          message: message,
+          success: postResponse.ok,
+          response_status: postResponse.status,
+          firebase_uid: botData.firebase_uid
+        });
+      } catch (logError) {
+        logger.error("Failed to log bot post activity", { error: logError.message });
+      }
     }
   } catch (e) {
     logger.error("GroupMe notification error:", e.message);

@@ -138,159 +138,62 @@ function generateSummary(r) {
     return out;
   }
 
+  // Top Areas
+  if (r.areaTotals.length > 0) {
+    out.push(`**Top Area:** **${r.areaTotals[0].area}** (${r.areaTotals[0].count} calls)`);
+    if (r.areaTotals.length > 1) {
+      out.push(`&nbsp;&nbsp;&nbsp;&nbsp;Close second: **${r.areaTotals[1].area}** (${r.areaTotals[1].count} calls)`);
+    }
+  }
+
+  // Busiest Days
+  const sortedDays = r.dayTotals
+    .map((count, idx) => ({ dayIdx: idx, count }))
+    .filter(d => d.count > 0)
+    .sort((a, b) => b.count - a.count);
+  
+  if (sortedDays.length > 0) {
+    out.push(`**Busiest Day:** **${DAY_LABELS[sortedDays[0].dayIdx]}** (${sortedDays[0].count} calls)`);
+    if (sortedDays.length > 1) {
+      out.push(`&nbsp;&nbsp;&nbsp;&nbsp;Close second: **${DAY_LABELS[sortedDays[1].dayIdx]}** (${sortedDays[1].count} calls)`);
+    }
+  }
+
+  // Peak Hours
+  const sortedHours = Object.entries(r.hourTotals)
+    .map(([h, c]) => ({ hour: Number(h), count: c }))
+    .sort((a, b) => b.count - a.count);
+  
+  if (sortedHours.length > 0) {
+    out.push(`**Peak Hour:** **${hourLabel(sortedHours[0].hour)}** (${sortedHours[0].count} calls)`);
+    if (sortedHours.length > 1) {
+      out.push(`&nbsp;&nbsp;&nbsp;&nbsp;Close second: **${hourLabel(sortedHours[1].hour)}** (${sortedHours[1].count} calls)`);
+    }
+  }
+
+  // Most concentrated spike
   if (r.topAny) {
-    out.push(
-      `Most concentrated spike: **${r.topAny.area}** on **${DAY_LABELS[r.topAny.dayIdx]}** at **${hourLabel(r.topAny.hour)}** (${r.topAny.count} calls).`
-    );
+    out.push(`**Most Concentrated Spike:** **${r.topAny.area}** on **${DAY_LABELS[r.topAny.dayIdx]}** at **${hourLabel(r.topAny.hour)}** (${r.topAny.count} calls)`);
   }
 
-  if (r.mostActiveArea?.count) {
-    out.push(
-      `Top area overall: **${r.mostActiveArea.area}** (${r.mostActiveArea.count} calls).`
-    );
-    
-    // Check for other significant areas
-    const otherSignificantAreas = r.areaTotals
-      .slice(1) // Skip the top area
-      .filter(area => {
-        const percentage = Math.round((area.count / r.mostActiveArea.count) * 100);
-        return percentage >= 30; // Show areas that are at least 30% of top area
-      })
-      .slice(0, 2); // Limit to top 2 other areas
-    
-    if (otherSignificantAreas.length > 0) {
-      otherSignificantAreas.forEach(area => {
-        const percentage = Math.round((area.count / r.mostActiveArea.count) * 100);
-        out.push(`→ **${area.area}** also significant with **${percentage}%** as many calls (${area.count} calls).`);
-      });
-    }
-  }
-
-  if (r.busiestDay?.count) {
-    out.push(
-      `Busiest day overall: **${DAY_LABELS[r.busiestDay.dayIdx]}** (${r.busiestDay.count} calls).`
-    );
-    
-    // Calculate top area and hour for busiest day
-    const dayAreaTotals = [];
-    const dayHourTotals = {};
-    
-    for (const [area, byDay] of r.counts.entries()) {
-      const hoursObj = byDay[r.busiestDay.dayIdx] || {};
-      const areaCountThisDay = Object.values(hoursObj).reduce((sum, c) => sum + c, 0);
-      if (areaCountThisDay > 0) {
-        dayAreaTotals.push({ area, count: areaCountThisDay });
-      }
-      
-      for (const [hStr, c] of Object.entries(hoursObj)) {
-        const h = Number(hStr);
-        dayHourTotals[h] = (dayHourTotals[h] || 0) + c;
-      }
-    }
-    
-    const topDayArea = dayAreaTotals.sort((a, b) => b.count - a.count)[0];
-    const topDayHour = Object.entries(dayHourTotals)
-      .map(([h, c]) => ({ hour: Number(h), count: c }))
-      .sort((a, b) => b.count - a.count)[0];
-    
-    if (topDayArea && topDayHour) {
-      out.push(`→ Top area: **${topDayArea.area}** (${topDayArea.count} calls) • Top hour: **${hourLabel(topDayHour.hour)}** (${topDayHour.count} calls).`);
-    }
-    
-    // Check for area outliers on busiest day
-    if (r.counts.size > 1 && topDayArea) {
-      const percentage = Math.round((topDayArea.count / r.busiestDay.count) * 100);
-      if (percentage >= 50) {
-        out.push(`→ **${percentage}%** of ${DAY_LABELS[r.busiestDay.dayIdx]}'s activity was in **${topDayArea.area}**.`);
-      }
-    }
-    
-    // Check for hour outliers on busiest day
-    if (topDayHour && topDayHour.count >= 2) {
-      const percentage = Math.round((topDayHour.count / r.busiestDay.count) * 100);
-      if (percentage >= 30) {
-        out.push(`→ **${percentage}%** of ${DAY_LABELS[r.busiestDay.dayIdx]}'s activity was at **${hourLabel(topDayHour.hour)}**.`);
-      }
-    }
-  }
-
-  if (r.peakHour?.count) {
-    out.push(
-      `Peak hour overall: **${hourLabel(r.peakHour.hour)}** (${r.peakHour.count} calls).`
-    );
-    
-    // Check for hour outliers
-    if (r.counts.size > 1) {
-      for (const [area, byDay] of r.counts.entries()) {
-        let areaCountThisHour = 0;
-        byDay.forEach(hoursObj => {
-          if (hoursObj[r.peakHour.hour]) {
-            areaCountThisHour += hoursObj[r.peakHour.hour];
-          }
-        });
-        const percentage = Math.round((areaCountThisHour / r.peakHour.count) * 100);
-        if (percentage >= 50) {
-          out.push(`→ **${percentage}%** of ${hourLabel(r.peakHour.hour)} activity was in **${area}** (${areaCountThisHour} calls).`);
-        }
-      }
-    }
-  }
-
-  // Add response metrics
+  // Response metrics
   if (r.total > 0) {
-    out.push(`Response rate: **${r.responseRate}%** (${r.responded}/${r.total} calls responded to).`);
-    
+    out.push(`**Response Rate:** **${r.responseRate}%** (${r.responded}/${r.total} calls responded to)`);
     if (r.avgResponseTime !== null) {
-      out.push(`Average response time: **${r.avgResponseTime} minutes**.`);
+      out.push(`**Average Response Time:** **${r.avgResponseTime} minutes**`);
     }
   }
 
   return out;
 }
 
-export default function InsightsAI({ logs, selectedStores, selectedAreas, selectedWeek }) {
+export default function InsightsAI({ logs }) {
   const insights = useMemo(() => {
-    // Filter logs based on selections (same logic as heatmap)
-    const filteredLogs = (logs || []).filter((log) => {
-      // Filter by stores
-      if (selectedStores?.length && !selectedStores.includes(String(log.store))) {
-        return false;
-      }
-      
-      // Filter by areas
-      if (selectedAreas?.length && !selectedAreas.includes(log.area)) {
-        return false;
-      }
-      
-      // Filter by weeks
-      if (selectedWeek?.length) {
-        const week0 = new Date(2025, 1, 1);
-        let ts = log.ts;
-        let d = null;
-        if (ts?.toDate) d = ts.toDate();
-        else if (ts?.seconds) d = new Date(ts.seconds * 1000);
-        else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
-        
-        if (!d || isNaN(d)) return false;
-        
-        const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
-        if (diffDays < 0) return false;
-        
-        const weekNum = Math.floor(diffDays / 7) + 1;
-        const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
-        const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
-        const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
-        
-        if (!selectedWeek.includes(label)) return false;
-      }
-      
-      return true;
-    });
-    
-    const analysis = analyzeActivity(filteredLogs);
+    // logs are already filtered by the parent component
+    const analysis = analyzeActivity(logs || []);
     const summary = generateSummary(analysis);
     return summary;
-  }, [logs, selectedStores, selectedAreas, selectedWeek]);
+  }, [logs]);
 
   return (
     <div className="rounded-2xl border border-themed p-4 bg-secondary space-y-3">

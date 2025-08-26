@@ -30,26 +30,26 @@ export default function QRLockIcon({ className = "h-6 w-6 text-white" }) {
       <g fill="white">
         {/* Key head (circle) */}
         <circle 
-          cx="1.41" cy="0.6" r="1.3" 
+          cx="1" cy="1" r="1.2" 
           fill="none" 
           stroke="white" 
           strokeWidth="0.8" 
           transform="matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"
         />
-        {/* Key shaft - updated positioning */}
+        {/* Key shaft */}
         <rect 
-          x="13.83" y="2.7" width="2.5" height="0.6" 
-          transform="translate(20.1072 19.0951) scale(0.946025 0.924475) translate(-20.1072 -19.0951) matrix(1.52466 1.35751 -1.55388 1.38353 -0.660839 -7.70445)"
+          x="1.8" y="0.7" width="2.5" height="0.6" 
+          transform="translate(15.0319 14.7312) scale(1.23625 1.22975) translate(-15.0319 -14.7312) matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"
         />
-        {/* Key teeth 1 - updated positioning */}
+        {/* Key teeth 1 */}
         <rect 
-          x="28.92" y="-0.54" width="0.3" height="0.8" 
-          transform="translate(18.075 18.1222) scale(1.1571 1.18894) translate(-18.075 -18.1222) matrix(1.69319 2.13421 -2.04735 1.87553 -29.7545 -44.1305)"
+          x="18.63" y="1" width="0.3" height="0.8" 
+          transform="matrix(1.30858 1.17965 -1.33366 1.20226 -3.72808 -6.43413)"
         />
-        {/* Key teeth 2 - updated positioning */}
+        {/* Key teeth 2 */}
         <rect 
-          x="17.98" y="15.75" width="1.62" height="0.75" 
-          transform="rotate(135 18.7906 16.123)"
+          x="18" y="16.4" width="0.65" height="0.43" 
+          transform="rotate(135 18.3273 16.6163)"
         />
       </g>
     </svg>

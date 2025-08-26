@@ -23,10 +23,14 @@ service cloud.firestore {
       allow write: if false; // Only Functions can write via Admin SDK
     }
 
-    // Logs collection - only Functions can write, authenticated users can read
+    // Logs collection - only Functions can write, authenticated users can read, admin can delete
     match /logs/{logId} {
       allow read: if request.auth != null;
-      allow write: if false; // Only Functions can write via Admin SDK
+      allow create, update: if false; // Only Functions can create/update via Admin SDK
+      // Allow admin to delete logs for cleanup purposes
+      allow delete: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
     }
 
     // GroupMe tokens collection - users can only access their own tokens
@@ -37,9 +41,9 @@ service cloud.firestore {
     // GroupMe bots collection - users can only access their own bots
     match /groupme_bots/{botId} {
       allow read, write: if request.auth != null && 
-        resource.data.user_id == request.auth.uid;
+        resource.data.firebase_uid == request.auth.uid;
       allow create: if request.auth != null && 
-        request.resource.data.user_id == request.auth.uid;
+        request.resource.data.firebase_uid == request.auth.uid;
     }
 
     // Workvivo config collection - users can only access their own config

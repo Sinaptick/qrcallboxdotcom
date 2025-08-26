@@ -9,9 +9,13 @@ function sanitizeInput(input, maxLength = 100) {
   return input.trim().substring(0, maxLength).replace(/[<>\"'&]/g, '');
 }
 
-export async function mint(store, area) {
+export async function mint(store, area, authToken) {
   if (!API_KEY) {
     throw new Error("API key not configured");
+  }
+  
+  if (!authToken) {
+    throw new Error("Authentication required");
   }
 
   // Sanitize inputs
@@ -32,6 +36,7 @@ export async function mint(store, area) {
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": API_KEY,
+      "Authorization": `Bearer ${authToken}`,
     },
     body: JSON.stringify({ store: sanitizedStore, area: sanitizedArea }),
   });

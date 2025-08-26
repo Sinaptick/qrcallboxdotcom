@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Button from "./Button.jsx";
-import { useFirebase } from "./app.jsx";
+import { useFirebase } from "./hooks/useFirebase.js";
 
 export default function TicketQueue() {
   const { auth } = useFirebase();

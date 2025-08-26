@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from "react";
 import Button from "./Button.jsx";
-import { useFirebase } from "./app.jsx";
+import { useFirebase } from "./hooks/useFirebase.js";
 
-export default function MyTickets() {
+export default function MyTickets({ onCreateTicket }) {
   const { auth } = useFirebase();
   const user = auth?.currentUser;
   
@@ -65,9 +65,16 @@ export default function MyTickets() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-primary">My Support Tickets</h2>
-        <Button onClick={loadMyTickets} disabled={loading}>
-          {loading ? "Loading..." : "Refresh"}
-        </Button>
+        <div className="flex gap-3">
+          {onCreateTicket && (
+            <Button onClick={onCreateTicket} className="bg-blue-600 hover:bg-blue-700 text-white">
+              Create Ticket
+            </Button>
+          )}
+          <Button onClick={loadMyTickets} disabled={loading}>
+            {loading ? "Loading..." : "Refresh"}
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-[600px]">

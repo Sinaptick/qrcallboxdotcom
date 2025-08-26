@@ -71,7 +71,7 @@ export default function Setup({ onNavigate }) {
       {/* Header */}
       <div className="text-center mb-8">
         <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Store Implementation Setup</h2>
-        <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+        <p className="text-lg text-gray-700 dark:text-gray-300 max-w-2xl mx-auto">
           Follow these four simple steps to implement QRcallbox in your store and start providing 
           instant customer assistance.
         </p>

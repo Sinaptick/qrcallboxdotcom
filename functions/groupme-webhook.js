@@ -16,7 +16,31 @@ export const groupmeWebhook = onRequest({
     }
 
     const payload = req.body;
-    logger.info("GroupMe webhook received", { payload });
+    logger.info("GroupMe webhook received", { 
+      sender_type: payload.sender_type,
+      nickname: payload.nickname,
+      user_id: payload.user_id,
+      text_preview: payload.text ? payload.text.substring(0, 50) + "..." : "no text"
+    });
+
+    // Log webhook activity for admin panel
+    try {
+      await db.collection("groupme_webhook_logs").add({
+        timestamp: FieldValue.serverTimestamp(),
+        group_id: payload.group_id,
+        sender_type: payload.sender_type,
+        sender_name: payload.nickname || payload.name || 'Unknown',
+        user_id: payload.user_id,
+        message_type: payload.sender_type === "bot" ? "bot_message" : "user_message",
+        text_preview: payload.text ? payload.text.substring(0, 100) : null,
+        attachments_count: payload.attachments ? payload.attachments.length : 0,
+        system_message: payload.system || false,
+        raw_payload: JSON.stringify(payload)
+      });
+    } catch (logError) {
+      logger.error("Failed to log webhook activity", { error: logError.message });
+      // Don't fail the webhook processing if logging fails
+    }
 
     // Ignore bot messages (only track human responses)
     if (payload.sender_type === "bot") {
@@ -28,11 +52,9 @@ export const groupmeWebhook = onRequest({
       await logAssistanceResponse(payload);
     }
     
-    // Check if this is a like on the QR assistance message (treat as response)
-    await checkForQRMessageLikes(payload);
-    
-    // Additionally, check if this is a like update for an existing logged message
-    await updateMessageLikes(payload);
+    // TODO: Like tracking commented out - focusing on message responses only
+    // await checkForQRMessageLikes(payload);
+    // await updateMessageLikes(payload);
 
     res.status(200).send("OK");
   } catch (e) {
@@ -72,7 +94,7 @@ async function isAssistanceResponse(payload) {
  * Log an assistance response (now records ANY first message after QR request)
  */
 async function logAssistanceResponse(payload) {
-  const { name, user_id, text, group_id, created_at, favorited_by, id: message_id } = payload;
+  const { nickname, user_id, text, group_id, created_at, favorited_by, id: message_id } = payload;
   
   try {
     const db = getFirestore();
@@ -102,7 +124,7 @@ async function logAssistanceResponse(payload) {
       // Update the log with response info
       await logDoc.ref.update({
         respondedAt: FieldValue.serverTimestamp(),
-        responderName: name,
+        responderName: nickname,
         responderUserId: user_id,
         responseText: text,
         responseTime: responseTime,
@@ -117,7 +139,7 @@ async function logAssistanceResponse(payload) {
 
       logger.info("Logged assistance response", {
         logId: logDoc.id,
-        responder: name,
+        responder: nickname,
         responseText: text,
         responseTimeSeconds: responseTimeSeconds,
         likeCount: likeCount,

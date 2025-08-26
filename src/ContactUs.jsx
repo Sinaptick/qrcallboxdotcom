@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import Button from "./Button.jsx";
-import { useFirebase } from "./app.jsx";
+import { useFirebase } from "./hooks/useFirebase.js";
 
 export default function ContactUs({ onClose }) {
   const { auth, db } = useFirebase();

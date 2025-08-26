@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import Button from "./Button.jsx";
-import { useFirebase } from "./app.jsx";
+import { useFirebase } from "./hooks/useFirebase.js";
 
 // Firebase Functions URLs (using direct URLs temporarily for testing)
 const FUNCTIONS_BASE = {
@@ -21,6 +21,7 @@ export default function GroupMeSetup() {
   const [error, setError] = useState("");
   const [groupmeUserId, setGroupmeUserId] = useState("");
   const [debugInfo, setDebugInfo] = useState([]);
+  const [existingBots, setExistingBots] = useState([]);
 
   // Check connection status on load
   useEffect(() => {
@@ -109,6 +110,59 @@ export default function GroupMeSetup() {
     }, 300000);
   };
 
+  // Step 1b: Load existing bots
+  const fetchExistingBots = async (userId) => {
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/list-bots?user_id=${userId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setExistingBots(data.bots || []);
+        addDebug(`Found ${data.bots?.length || 0} existing bots`);
+      }
+    } catch (err) {
+      addDebug(`Error fetching bots: ${err.message}`);
+    }
+  };
+
+  // Step 1c: Delete a bot
+  const deleteBot = async (botId) => {
+    try {
+      setLoading(true);
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/delete-bot`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_id: groupmeUserId,
+          bot_id: botId
+        })
+      });
+      
+      if (res.ok) {
+        addDebug(`Bot ${botId} deleted successfully`);
+        setError("");
+        // Refresh bot list
+        await fetchExistingBots(groupmeUserId);
+      } else {
+        const text = await res.text();
+        setError(`Failed to delete bot: ${text}`);
+      }
+    } catch (err) {
+      setError(`Error deleting bot: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Step 2: Load groups
   const fetchGroups = async (userId) => {
     addDebug(`Fetching groups for user ID: ${userId}`);
@@ -150,6 +204,9 @@ export default function GroupMeSetup() {
       
       addDebug(`Processed groups: ${processedGroups.map(g => g.name).join(', ')}`);
       setGroups(processedGroups);
+      
+      // Also fetch existing bots when groups are loaded
+      await fetchExistingBots(userId);
     } catch (err) {
       const errorMsg = "Failed to load groups: " + err.message;
       addDebug(`Groups error: ${errorMsg}`);
@@ -348,6 +405,35 @@ export default function GroupMeSetup() {
                     ))}
                   </select>
                 </div>
+                
+                {/* Show existing bots */}
+                {existingBots.length > 0 && (
+                  <div className="mt-4 p-3 bg-yellow-900/20 border border-yellow-500/50 rounded-xl">
+                    <p className="text-sm font-medium text-yellow-400 mb-2">
+                      ⚠️ Existing Bots ({existingBots.length}):
+                    </p>
+                    <div className="space-y-2">
+                      {existingBots.map(bot => (
+                        <div key={bot.id} className="flex items-center justify-between text-xs">
+                          <span className="text-yellow-300">
+                            {bot.name} in {groups.find(g => g.id === bot.group_id)?.name || 'Unknown Group'} 
+                            {bot.store && ` - Store: ${bot.store}`}
+                          </span>
+                          <button
+                            onClick={() => deleteBot(bot.bot_id)}
+                            disabled={loading}
+                            className="text-red-400 hover:text-red-300 underline"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-yellow-500 mt-2">
+                      If you're getting a "callback URL already registered" error, delete the existing bot first.
+                    </p>
+                  </div>
+                )}
                 
                 <Button 
                   onClick={handleCreateBot} 

@@ -4,7 +4,6 @@ import Heatmap from "./Heatmap.jsx";
 import * as QR from "qrcode";
 import { mint } from "./lib/api.js";
 import PosterWithQR from "./PosterWithQR.jsx";
-import { initializeApp, getApps } from "firebase/app";
 import UnapprovedUsersList from "./UnapprovedUsersList.jsx";
 import InsightsAI from "./InsightsAI.jsx";
 import GroupMeSetup from "./GroupMeSetup.jsx";
@@ -16,8 +15,12 @@ import Setup from "./Setup.jsx";
 import BlockedIPsManager from "./BlockedIPsManager.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
-import QRLockIcon from "./QRLockIcon.jsx";
 import TermsOfService from "./TermsOfService.jsx";
+
+// New modular imports
+import { useFirebase } from "./hooks/useFirebase.js";
+import ErrorBoundary from "./components/shared/ErrorBoundary.jsx";
+import LandingPage from "./components/layout/LandingPage.jsx";
 import {
   getAuth,
   onAuthStateChanged,
@@ -33,59 +36,20 @@ import {
   setDoc,
   serverTimestamp,
 } from "firebase/firestore";
+import {
+  storeHierarchy,
+  getAllStoresForSelection,
+  getSelectionDisplayName,
+  getBUOptions,
+  getRegionOptions,
+  getMarketOptions,
+  validateStoreAccess
+} from "./storeHierarchy.js";
 
-// -----------------------------
-// 🧯 Error Boundary
-// -----------------------------
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error, errorInfo) {
-    this.setState({ error, errorInfo });
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center bg-red-50 p-8">
-          <h1 className="text-2xl font-bold text-red-700 mb-2">Something went wrong.</h1>
-          <pre className="bg-white p-4 rounded-xl border border-red-200 text-red-800 text-sm overflow-auto max-w-xl w-full">
-            {this.state.error && this.state.error.toString()}
-            {this.state.errorInfo && this.state.errorInfo.componentStack}
-          </pre>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
+// ErrorBoundary now imported from components/shared/ErrorBoundary.jsx
 
-// -----------------------------
-// Firebase Setup
-// -----------------------------
-const firebaseConfig = {
-  apiKey: "AIzaSyCbpXuSt3UHAWtAfiKbVx621vwpL5cKnkA",
-  authDomain: "qrwebaccdb.firebaseapp.com",
-  projectId: "qrwebaccdb",
-  storageBucket: "qrwebaccdb.appspot.com",
-  messagingSenderId: "611687644130",
-  appId: "1:611687644130:web:3f4011c00e1baae1e397bb",
-  measurementId: "G-JXF9XEFCD4",
-};
-
-export function useFirebase() {
-  const app = useMemo(
-    () => (getApps().length ? getApps()[0] : initializeApp(firebaseConfig)),
-    []
-  );
-  const auth = useMemo(() => getAuth(app), [app]);
-  const db = useMemo(() => getFirestore(app), [app]);
-  return { app, auth, db };
-}
+// Firebase configuration now in config/firebase.config.js
+// useFirebase hook now in hooks/useFirebase.js
 
 // -----------------------------
 // 🧱 UI Primitives (Tailwind)
@@ -164,21 +128,41 @@ function Banner({ children }) {
 // -----------------------------
 // 🧾 Generate QR Codes
 // -----------------------------
-function GenerateQR() {
-  const [store, setStore] = useState("");
+function GenerateQR({ userDoc, isAdmin }) {
+  const { auth } = useFirebase();
+  const [store, setStore] = useState(userDoc?.storeNumber ? String(userDoc.storeNumber) : "");
+
+  // Update store when userDoc changes
+  useEffect(() => {
+    if (!isAdmin && userDoc) {
+      // Market+ level users can only use their home store
+      if (userDoc?.selectionType !== 'store' && userDoc?.homeStore) {
+        setStore(String(userDoc.homeStore));
+      }
+      // Store-level users with multiple stores can choose
+      else if (userDoc?.selectionType === 'store' && userDoc?.allowedStores && userDoc.allowedStores.length > 1) {
+        setStore(""); // Let them choose
+      }
+      // Single store users auto-set
+      else if (userDoc?.storeNumber) {
+        setStore(String(userDoc.storeNumber));
+      }
+    }
+  }, [userDoc, isAdmin]);
   const [area, setArea] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const posterRef = React.useRef();
 
-  const ready = /^\d{3,6}$/.test(store.trim()) && !!area.trim() && !error && !busy;
+  const ready = /^\d{3,6}$/.test(String(store || "").trim()) && !!area.trim() && !error && !busy;
 
   function validate() {
     setError("");
-    const s = store.trim();
+    const s = String(store || "").trim();
     const a = area.trim();
-    if (!s || !a) return setError("Please enter both Store number and Area.");
+    if (!s) return setError(isAdmin ? "Please enter Store number." : "Store number not configured in your profile.");
+    if (!a) return setError("Please enter Area.");
     if (!/^\d{3,6}$/.test(s)) return setError("Store number must be 3–6 digits.");
     if (!/^[a-zA-Z0-9\s._-]{1,50}$/.test(a)) {
       return setError("Area allows letters, numbers, space, . _ - (max 50 chars).");
@@ -193,7 +177,22 @@ function GenerateQR() {
       if (!ok) return;
       setBusy(true);
       setQrDataUrl("");
-      const data = await mint(store.trim(), area.trim());
+      
+      // Get authentication token
+      const authToken = await auth.currentUser?.getIdToken();
+      if (!authToken) {
+        throw new Error("Authentication required");
+      }
+      
+      // Ensure store is only numeric digits
+      const rawStore = String(store || "").trim();
+      const numericStore = rawStore.replace(/[^0-9]/g, ''); // Strip any non-numeric characters
+      
+      if (!numericStore || !/^\d{3,6}$/.test(numericStore)) {
+        throw new Error(`Invalid store number: "${rawStore}" -> "${numericStore}"`);
+      }
+      
+      const data = await mint(numericStore, area.trim(), authToken);
       const shortUrl = `${window.location.origin}/s?t=${encodeURIComponent(data.token)}`;
       const dataUrl = await QR.toDataURL(shortUrl, {
         width: 600,
@@ -251,17 +250,46 @@ function GenerateQR() {
     <div className="space-y-4">
       <div className="bg-secondary rounded-2xl border border-themed p-3 sm:p-4">
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="block">
-            <span className="text-sm text-primary">Store number</span>
-            <input
-              className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
-                         placeholder:text-muted focus:border-indigo-500 focus:outline-none
-                         focus:ring-2 focus:ring-indigo-500"
-              placeholder="e.g. 1458"
-              value={store}
-              onChange={(e) => setStore(e.target.value)}
-            />
-          </label>
+          {isAdmin ? (
+            <label className="block">
+              <span className="text-sm text-primary">Store number</span>
+              <input
+                className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
+                           placeholder:text-muted focus:border-indigo-500 focus:outline-none
+                           focus:ring-2 focus:ring-indigo-500"
+                placeholder="e.g. 1458"
+                value={store}
+                onChange={(e) => setStore(e.target.value)}
+              />
+            </label>
+          ) : (userDoc?.allowedStores && userDoc.allowedStores.length > 1 && userDoc?.selectionType === 'store') || userDoc?.homeStore ? (
+            <label className="block">
+              <span className="text-sm text-primary">Store number</span>
+              <select
+                className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
+                           focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                value={store}
+                onChange={(e) => setStore(e.target.value)}
+              >
+                <option value="">Select store...</option>
+                {/* Only show all allowed stores if user has store-level access */}
+                {userDoc?.selectionType === 'store' && userDoc?.allowedStores?.map(storeNum => (
+                  <option key={storeNum} value={storeNum}>Store {storeNum}</option>
+                ))}
+                {/* Always show home store for market+ level users */}
+                {userDoc?.homeStore && (userDoc?.selectionType !== 'store' || !userDoc?.allowedStores?.includes(userDoc.homeStore)) && (
+                  <option value={userDoc.homeStore}>Store {userDoc.homeStore} (Home Store)</option>
+                )}
+              </select>
+            </label>
+          ) : (
+            <div className="block">
+              <span className="text-sm text-primary">Store number</span>
+              <div className="mt-1 w-full rounded-xl border border-themed bg-tertiary text-primary px-3 py-2">
+                {store || "Not set"}
+              </div>
+            </div>
+          )}
 
           <label className="block sm:col-span-2">
             <span className="text-sm text-primary">Area</span>
@@ -383,12 +411,15 @@ function RegisterForm({ onSwitch }) {
     firstName: "",
     lastName: "",
     storeNumber: "",
+    homeStore: "",
     jobTitle: "",
     phone: "",
     email: "",
     password: "",
     confirm: "",
   });
+  const [selectionType, setSelectionType] = useState(""); // 'store', 'market', 'region', 'bu'
+  const [selectionValue, setSelectionValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -406,7 +437,17 @@ function RegisterForm({ onSwitch }) {
     setSuccess("");
     if (!passwordOk) return setError("Password must be at least 8 chars, include a letter and a number.");
     if (!passwordsMatch) return setError("Passwords do not match.");
-    if (!/^[0-9]{3,6}$/.test(form.storeNumber)) return setError("Store number should be 3–6 digits.");
+    
+    // Validate selection
+    if (!selectionType) return setError("Please select a level (Store, Market, Region, or BU).");
+    if (!selectionValue) return setError("Please enter or select a value.");
+    
+    // Get allowed stores based on selection
+    const allowedStores = getAllStoresForSelection(selectionType, selectionValue);
+    if (allowedStores.length === 0) {
+      return setError("Invalid selection. No stores found for the given input.");
+    }
+    
     try {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, form.email, form.password);
@@ -414,7 +455,12 @@ function RegisterForm({ onSwitch }) {
       await setDoc(doc(getFirestore(), "users", cred.user.uid), {
         firstName: form.firstName.trim(),
         lastName: form.lastName.trim(),
-        storeNumber: form.storeNumber.trim(),
+        storeNumber: allowedStores[0], // Default to first store in the list
+        homeStore: (form.homeStore || "").trim() || allowedStores[0], // Legacy store for QR generation
+        allowedStores: allowedStores, // Array of all accessible stores
+        selectionType: selectionType,
+        selectionValue: selectionValue,
+        selectionDisplay: getSelectionDisplayName(selectionType, selectionValue),
         jobTitle: form.jobTitle.trim(),
         phone: form.phone.trim(),
         email: form.email.trim().toLowerCase(),
@@ -440,7 +486,95 @@ function RegisterForm({ onSwitch }) {
         <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
           <Input label="First name" value={form.firstName} onChange={updateField("firstName")} required autoComplete="given-name" />
           <Input label="Last name" value={form.lastName} onChange={updateField("lastName")} required autoComplete="family-name" />
-          <Input label="Store number" value={form.storeNumber} onChange={updateField("storeNumber")} required />
+          
+          {/* Store/Market/Region/BU Selection */}
+          <div className="sm:col-span-2">
+            <label className="block">
+              <span className="text-sm font-medium text-primary">Access Level</span>
+              <select
+                className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+                value={selectionType}
+                onChange={(e) => {
+                  setSelectionType(e.target.value);
+                  setSelectionValue("");
+                }}
+                required
+              >
+                <option value="">Select level...</option>
+                <option value="store">Store</option>
+                <option value="market">Market</option>
+                <option value="region">Region</option>
+                <option value="bu">Business Unit (BU)</option>
+              </select>
+            </label>
+          </div>
+          
+          {/* Dynamic input based on selection type */}
+          {selectionType && (
+            <div className="sm:col-span-2">
+              <label className="block">
+                <span className="text-sm font-medium text-primary">
+                  {selectionType === 'store' && 'Store Number'}
+                  {selectionType === 'market' && 'Market'}
+                  {selectionType === 'region' && 'Region'}
+                  {selectionType === 'bu' && 'Business Unit'}
+                </span>
+                {selectionType === 'store' ? (
+                  <input
+                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+                    type="text"
+                    placeholder="Enter store number (e.g., 1458)"
+                    value={selectionValue}
+                    onChange={(e) => setSelectionValue(e.target.value)}
+                    required
+                  />
+                ) : selectionType === 'market' ? (
+                  <select
+                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+                    value={selectionValue}
+                    onChange={(e) => setSelectionValue(e.target.value)}
+                    required
+                  >
+                    <option value="">Select market...</option>
+                    {getMarketOptions().map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                ) : selectionType === 'region' ? (
+                  <select
+                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+                    value={selectionValue}
+                    onChange={(e) => setSelectionValue(e.target.value)}
+                    required
+                  >
+                    <option value="">Select region...</option>
+                    {getRegionOptions().map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                ) : selectionType === 'bu' ? (
+                  <select
+                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+                    value={selectionValue}
+                    onChange={(e) => setSelectionValue(e.target.value)}
+                    required
+                  >
+                    <option value="">Select BU...</option>
+                    {getBUOptions().map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                ) : null}
+              </label>
+              {selectionValue && (
+                <div className="mt-2 text-xs text-muted">
+                  This will give you access to {getAllStoresForSelection(selectionType, selectionValue).length} store(s)
+                </div>
+              )}
+            </div>
+          )}
+          
+          <Input label="Home Store (Legacy)" value={form.homeStore} onChange={updateField("homeStore")} placeholder="Enter your primary store number" />
           <Input label="Job title" value={form.jobTitle} onChange={updateField("jobTitle")} required />
           <Input label="Phone number" value={form.phone} onChange={updateField("phone")} required autoComplete="tel" />
           <Input label="Email address" type="email" value={form.email} onChange={updateField("email")} required autoComplete="email" />
@@ -1134,60 +1268,1067 @@ function PendingChangesList({ db }) {
   );
 }
 
-// Admin user search (standalone)
-function UserStatusSearch({ db }) {
-  const [email, setEmail] = useState("");
-  const [result, setResult] = useState(null);
+// Data Cleanup Tool for admins
+function DataCleanupTool({ db }) {
+  const { auth } = useFirebase();
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [searchCriteria, setSearchCriteria] = useState({
+    searchType: 'area',
+    searchValue: '',
+    store: '',
+    dateRange: 'all'
+  });
+  const [searchResults, setSearchResults] = useState([]);
+  const [selectedLogs, setSelectedLogs] = useState(new Set());
+  const [searching, setSearching] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [message, setMessage] = useState('');
+  const [stats, setStats] = useState({ total: 0, selected: 0 });
+
+  // Check if current user is admin
+  useEffect(() => {
+    async function checkAdminStatus() {
+      if (!auth.currentUser) {
+        setIsAdmin(false);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const { getDoc, doc } = await import("firebase/firestore");
+        const userDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
+        const isUserAdmin = userDoc.exists() && userDoc.data().email === 'sinaptick@gmail.com';
+        setIsAdmin(isUserAdmin);
+      } catch (error) {
+        console.error('Error checking admin status:', error);
+        setIsAdmin(false);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    checkAdminStatus();
+  }, [auth.currentUser, db]);
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <div className="text-muted">Checking permissions...</div>
+      </div>
+    );
+  }
+
+  // Show access denied for non-admin users
+  if (!isAdmin) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
+        <div className="text-red-700 text-lg font-semibold mb-2">🚫 Access Denied</div>
+        <div className="text-red-600 text-sm">
+          The Data Cleanup Tool is restricted to administrators only.
+          <br />
+          Contact your system administrator if you need access to this feature.
+        </div>
+      </div>
+    );
+  }
+
+  const handleSearch = async () => {
+    if (!searchCriteria.searchValue.trim()) {
+      setMessage('Please enter a search value');
+      return;
+    }
+
+    setSearching(true);
+    setMessage('');
+    setSelectedLogs(new Set());
+
+    try {
+      const { getDocs, collection, query, where, orderBy, limit } = await import("firebase/firestore");
+      
+      let q = collection(db, "logs");
+      
+      // Build query based on search criteria
+      if (searchCriteria.searchType === 'area') {
+        q = query(q, where("area", "==", searchCriteria.searchValue.trim()));
+      } else if (searchCriteria.searchType === 'store') {
+        q = query(q, where("store", "==", searchCriteria.searchValue.trim()));
+      } else if (searchCriteria.searchType === 'partial_area') {
+        // For partial matches, we'll filter client-side after fetching
+        q = query(q, orderBy("ts", "desc"), limit(1000));
+      }
+      
+      if (searchCriteria.store && searchCriteria.searchType !== 'store') {
+        q = query(q, where("store", "==", searchCriteria.store.trim()));
+      }
+      
+      const snapshot = await getDocs(q);
+      let results = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        timestamp: doc.data().ts?.toDate?.() || new Date(doc.data().ts || 0)
+      }));
+      
+      // Client-side filtering for partial matches
+      if (searchCriteria.searchType === 'partial_area') {
+        const searchTerm = searchCriteria.searchValue.toLowerCase();
+        results = results.filter(log => 
+          log.area?.toLowerCase().includes(searchTerm)
+        );
+      }
+      
+      // Date range filtering
+      if (searchCriteria.dateRange !== 'all') {
+        const now = new Date();
+        let cutoffDate;
+        
+        switch (searchCriteria.dateRange) {
+          case '7days':
+            cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            break;
+          case '30days':
+            cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            break;
+          case '90days':
+            cutoffDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+            break;
+          default:
+            cutoffDate = new Date(0);
+        }
+        
+        results = results.filter(log => log.timestamp >= cutoffDate);
+      }
+      
+      // Sort by timestamp descending
+      results.sort((a, b) => b.timestamp - a.timestamp);
+      
+      setSearchResults(results);
+      setStats({ total: results.length, selected: 0 });
+      
+      if (results.length === 0) {
+        setMessage('No logs found matching the search criteria');
+      } else {
+        setMessage(`Found ${results.length} log entries`);
+      }
+      
+    } catch (error) {
+      console.error('Search error:', error);
+      setMessage('Error searching logs: ' + (error.message || error));
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleSelectAll = () => {
+    if (selectedLogs.size === searchResults.length) {
+      setSelectedLogs(new Set());
+      setStats(prev => ({ ...prev, selected: 0 }));
+    } else {
+      const allIds = new Set(searchResults.map(log => log.id));
+      setSelectedLogs(allIds);
+      setStats(prev => ({ ...prev, selected: searchResults.length }));
+    }
+  };
+
+  const handleSelectLog = (logId) => {
+    const newSelected = new Set(selectedLogs);
+    if (newSelected.has(logId)) {
+      newSelected.delete(logId);
+    } else {
+      newSelected.add(logId);
+    }
+    setSelectedLogs(newSelected);
+    setStats(prev => ({ ...prev, selected: newSelected.size }));
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedLogs.size === 0) {
+      setMessage('No logs selected for deletion');
+      return;
+    }
+
+    const confirmMessage = `Are you sure you want to delete ${selectedLogs.size} log entries? This action cannot be undone.`;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setDeleting(true);
+    setMessage('');
+
+    try {
+      const { deleteDoc, doc } = await import("firebase/firestore");
+      
+      // Delete in batches to avoid overwhelming Firestore
+      const selectedIds = Array.from(selectedLogs);
+      const batchSize = 50;
+      let deletedCount = 0;
+      
+      for (let i = 0; i < selectedIds.length; i += batchSize) {
+        const batch = selectedIds.slice(i, i + batchSize);
+        await Promise.all(batch.map(id => deleteDoc(doc(db, "logs", id))));
+        deletedCount += batch.length;
+        
+        // Update progress
+        setMessage(`Deleting logs: ${deletedCount}/${selectedIds.length}`);
+      }
+      
+      // Remove deleted items from search results
+      const remainingResults = searchResults.filter(log => !selectedLogs.has(log.id));
+      setSearchResults(remainingResults);
+      setSelectedLogs(new Set());
+      setStats({ total: remainingResults.length, selected: 0 });
+      
+      setMessage(`Successfully deleted ${deletedCount} log entries`);
+      
+    } catch (error) {
+      console.error('Delete error:', error);
+      setMessage('Error deleting logs: ' + (error.message || error));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+        <div className="text-amber-800 text-sm">
+          <div className="font-semibold mb-1">🔧 Admin Data Cleanup Tool</div>
+          Use this tool to search for and delete erroneous QR scan logs (e.g., test entries, spam, etc.).
+          <span className="text-red-600 block mt-1">⚠️ Deleted logs cannot be recovered. Use with caution.</span>
+        </div>
+      </div>
+
+      {/* Search Criteria */}
+      <div className="bg-secondary rounded-xl p-4 border border-themed">
+        <h3 className="text-lg font-semibold text-primary mb-3">Search Criteria</h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-primary mb-1">Search Type</label>
+            <select
+              className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
+              value={searchCriteria.searchType}
+              onChange={(e) => setSearchCriteria(prev => ({ ...prev, searchType: e.target.value }))}
+            >
+              <option value="area">Exact Area Match</option>
+              <option value="partial_area">Partial Area Match</option>
+              <option value="store">Store Number</option>
+            </select>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-primary mb-1">
+              {searchCriteria.searchType === 'store' ? 'Store Number' : 'Area Name'}
+            </label>
+            <input
+              type="text"
+              className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
+              placeholder={searchCriteria.searchType === 'store' ? 'e.g., 1458' : 'e.g., test, Test Area'}
+              value={searchCriteria.searchValue}
+              onChange={(e) => setSearchCriteria(prev => ({ ...prev, searchValue: e.target.value }))}
+            />
+          </div>
+          
+          {searchCriteria.searchType !== 'store' && (
+            <div>
+              <label className="block text-sm font-medium text-primary mb-1">Filter by Store (Optional)</label>
+              <input
+                type="text"
+                className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
+                placeholder="e.g., 1458"
+                value={searchCriteria.store}
+                onChange={(e) => setSearchCriteria(prev => ({ ...prev, store: e.target.value }))}
+              />
+            </div>
+          )}
+          
+          <div>
+            <label className="block text-sm font-medium text-primary mb-1">Date Range</label>
+            <select
+              className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
+              value={searchCriteria.dateRange}
+              onChange={(e) => setSearchCriteria(prev => ({ ...prev, dateRange: e.target.value }))}
+            >
+              <option value="all">All Time</option>
+              <option value="7days">Last 7 Days</option>
+              <option value="30days">Last 30 Days</option>
+              <option value="90days">Last 90 Days</option>
+            </select>
+          </div>
+        </div>
+        
+        <div className="mt-4 flex gap-2">
+          <Button onClick={handleSearch} disabled={searching}>
+            {searching ? 'Searching...' : 'Search Logs'}
+          </Button>
+          
+          {searchResults.length > 0 && (
+            <Button 
+              onClick={handleDeleteSelected} 
+              disabled={deleting || selectedLogs.size === 0}
+              className="bg-red-500 hover:bg-red-600"
+            >
+              {deleting ? `Deleting... (${selectedLogs.size})` : `Delete Selected (${selectedLogs.size})`}
+            </Button>
+          )}
+        </div>
+        
+        {message && (
+          <div className={`mt-3 text-sm p-2 rounded ${message.includes('Error') || message.includes('⚠️') ? 'bg-red-100 text-red-700 border border-red-200' : 'bg-blue-100 text-blue-700 border border-blue-200'}`}>
+            {message}
+          </div>
+        )}
+      </div>
+
+      {/* Search Results */}
+      {searchResults.length > 0 && (
+        <div className="bg-secondary rounded-xl p-4 border border-themed">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold text-primary">Search Results ({stats.total} found, {stats.selected} selected)</h3>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                className="rounded"
+                checked={selectedLogs.size === searchResults.length && searchResults.length > 0}
+                onChange={handleSelectAll}
+              />
+              Select All
+            </label>
+          </div>
+          
+          <div className="max-h-96 overflow-y-auto space-y-2">
+            {searchResults.map((log) => (
+              <div key={log.id} className="flex items-start gap-3 p-3 bg-tertiary rounded border border-themed">
+                <input
+                  type="checkbox"
+                  className="mt-1 rounded"
+                  checked={selectedLogs.has(log.id)}
+                  onChange={() => handleSelectLog(log.id)}
+                />
+                <div className="flex-1 text-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                    <div>
+                      <span className="font-medium text-primary">Store:</span>
+                      <span className="ml-1 text-primary">{log.store || 'N/A'}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-primary">Area:</span>
+                      <span className="ml-1 text-primary">{log.area || 'N/A'}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-primary">Date:</span>
+                      <span className="ml-1 text-primary">{log.timestamp.toLocaleDateString()}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-primary">Time:</span>
+                      <span className="ml-1 text-primary">{log.timestamp.toLocaleTimeString()}</span>
+                    </div>
+                  </div>
+                  {log.responderName && (
+                    <div className="mt-1">
+                      <span className="font-medium text-primary">Responder:</span>
+                      <span className="ml-1 text-primary">{log.responderName}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// Enhanced Admin User Management System
+function GroupMeDataDisplay({ userId, isAdmin }) {
+  const [groupmeData, setGroupmeData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const { auth } = useFirebase();
+  const user = auth?.currentUser;
+
+  const fetchGroupMeData = async () => {
+    if (!userId || !user) return;
+    
+    setLoading(true);
+    setError("");
+    
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`/api/groupme/admin-user-data?firebase_uid=${encodeURIComponent(userId)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setGroupmeData(data);
+      } else if (response.status === 404) {
+        setGroupmeData({ groupme_data: { tokens: [], bots: [], recent_webhook_activity: [], summary: { total_tokens: 0, total_bots: 0, stores_with_bots: [], recent_activity_count: 0 } } });
+      } else {
+        const errorText = await response.text();
+        setError(`Failed to fetch GroupMe data: ${errorText}`);
+      }
+    } catch (err) {
+      setError(`Error fetching GroupMe data: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (expanded && !groupmeData) {
+      fetchGroupMeData();
+    }
+  }, [expanded, userId]);
+
+  if (!userId) return null;
+
+  return (
+    <div className="border border-gray-600 rounded-lg p-4 bg-gray-800">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-lg font-medium text-white flex items-center gap-2">
+          <span className="text-green-400">📱</span>
+          GroupMe Integration Data
+        </h4>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-blue-400 hover:text-blue-300 text-sm"
+        >
+          {expanded ? "Hide" : "Show"} Details
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="space-y-4">
+          {loading && (
+            <div className="text-center py-4">
+              <div className="text-gray-400">Loading GroupMe data...</div>
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-3">
+              <div className="text-red-400 text-sm">{error}</div>
+            </div>
+          )}
+
+          {groupmeData && (
+            <div className="space-y-4">
+              {/* Summary */}
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+                <div className="bg-gray-700 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-blue-400">{groupmeData.groupme_data.summary.total_tokens}</div>
+                  <div className="text-xs text-gray-400">Tokens</div>
+                </div>
+                <div className="bg-gray-700 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-green-400">{groupmeData.groupme_data.summary.total_bots}</div>
+                  <div className="text-xs text-gray-400">Bots</div>
+                </div>
+                <div className="bg-gray-700 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-purple-400">{groupmeData.groupme_data.summary.stores_with_bots.length}</div>
+                  <div className="text-xs text-gray-400">Stores</div>
+                </div>
+                <div className="bg-gray-700 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-orange-400">{groupmeData.groupme_data.summary.recent_activity_count}</div>
+                  <div className="text-xs text-gray-400">Webhooks</div>
+                </div>
+                <div className="bg-gray-700 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-cyan-400">{groupmeData.groupme_data.summary.successful_posts || 0}</div>
+                  <div className="text-xs text-gray-400">Sent</div>
+                </div>
+                <div className="bg-gray-700 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-red-400">{groupmeData.groupme_data.summary.failed_posts || 0}</div>
+                  <div className="text-xs text-gray-400">Failed</div>
+                </div>
+              </div>
+
+              {/* Connected Stores */}
+              {groupmeData.groupme_data.summary.stores_with_bots.length > 0 && (
+                <div>
+                  <h5 className="text-sm font-medium text-gray-300 mb-2">Connected Stores:</h5>
+                  <div className="flex flex-wrap gap-2">
+                    {groupmeData.groupme_data.summary.stores_with_bots.map(store => (
+                      <span key={store} className="px-2 py-1 bg-blue-600 text-white text-xs rounded">
+                        Store {store}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* GroupMe Accounts */}
+              {groupmeData.groupme_data.tokens.length > 0 && (
+                <div>
+                  <h5 className="text-sm font-medium text-gray-300 mb-2">GroupMe Accounts ({groupmeData.groupme_data.tokens.length}):</h5>
+                  <div className="space-y-2">
+                    {groupmeData.groupme_data.tokens.map(token => (
+                      <div key={token.groupme_user_id} className="bg-gray-700 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm text-white">
+                              ID: {token.groupme_user_id}
+                              {token.user_name && <span className="text-gray-400 ml-2">({token.user_name})</span>}
+                            </div>
+                            <div className="text-xs text-gray-400">
+                              Connected: {token.created_at ? new Date(token.created_at.seconds * 1000).toLocaleDateString() : 'Unknown'}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${token.has_token ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                            <span className="text-xs text-gray-400">{token.has_token ? 'Active' : 'No Token'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Bots */}
+              {groupmeData.groupme_data.bots.length > 0 && (
+                <div>
+                  <h5 className="text-sm font-medium text-gray-300 mb-2">Active Bots ({groupmeData.groupme_data.bots.length}):</h5>
+                  <div className="space-y-2">
+                    {groupmeData.groupme_data.bots.map(bot => (
+                      <div key={bot.bot_id} className="bg-gray-700 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm text-white">{bot.name}</div>
+                            <div className="text-xs text-gray-400">
+                              Store: {bot.store || 'Unknown'} | Group: {bot.group_id}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              Bot ID: {bot.bot_id}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {bot.synced && <span className="text-xs bg-blue-600 text-white px-2 py-1 rounded">Synced</span>}
+                            <span className="text-xs text-gray-400">
+                              {bot.created_at ? new Date(bot.created_at.seconds * 1000).toLocaleDateString() : 'Unknown'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recent Bot Posts */}
+              {groupmeData.groupme_data.recent_bot_posts && groupmeData.groupme_data.recent_bot_posts.length > 0 && (
+                <div>
+                  <h5 className="text-sm font-medium text-gray-300 mb-2">Recent Bot Posts ({groupmeData.groupme_data.recent_bot_posts.length}):</h5>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {groupmeData.groupme_data.recent_bot_posts.map((post, index) => (
+                      <div key={index} className="text-xs text-gray-400 bg-gray-700 rounded p-2">
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${post.success ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                            Store {post.store} - {post.area}
+                          </span>
+                          <span>{post.timestamp ? new Date(post.timestamp.seconds * 1000).toLocaleString() : 'Unknown'}</span>
+                        </div>
+                        <div className="text-gray-500 mt-1 truncate">{post.message}</div>
+                        <div className="text-gray-600">Group: {post.group_id} | Status: {post.response_status}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recent Activity */}
+              {groupmeData.groupme_data.recent_webhook_activity.length > 0 && (
+                <div>
+                  <h5 className="text-sm font-medium text-gray-300 mb-2">Recent Webhook Activity ({groupmeData.groupme_data.recent_webhook_activity.length}):</h5>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {groupmeData.groupme_data.recent_webhook_activity.map((activity, index) => (
+                      <div key={index} className="text-xs text-gray-400 bg-gray-700 rounded p-2">
+                        <div className="flex items-center justify-between">
+                          <span>{activity.sender_name} - {activity.message_type}</span>
+                          <span>{activity.timestamp ? new Date(activity.timestamp.seconds * 1000).toLocaleString() : 'Unknown'}</span>
+                        </div>
+                        <div className="text-gray-500">
+                          Group: {activity.group_id}
+                          {activity.text_preview && <span> | "{activity.text_preview.substring(0, 30)}..."</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* No Data Message */}
+              {groupmeData.groupme_data.summary.total_tokens === 0 && groupmeData.groupme_data.summary.total_bots === 0 && (
+                <div className="text-center py-6 text-gray-400">
+                  <div className="text-4xl mb-2">📱</div>
+                  <div>No GroupMe integration data found</div>
+                  <div className="text-sm text-gray-500">This user hasn't connected any GroupMe accounts</div>
+                </div>
+              )}
+
+              {/* Refresh Button */}
+              <div className="flex justify-end">
+                <button
+                  onClick={fetchGroupMeData}
+                  disabled={loading}
+                  className="text-xs px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white rounded"
+                >
+                  {loading ? "Refreshing..." : "Refresh Data"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserManagement({ db }) {
+  const [searchType, setSearchType] = useState("email");
+  const [searchValue, setSearchValue] = useState("");
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editingUser, setEditingUser] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const searchTypes = [
+    { value: "email", label: "Email Address" },
+    { value: "name", label: "Name (First/Last)" },
+    { value: "store", label: "Store Number" },
+    { value: "market", label: "Market Number" },
+    { value: "region", label: "Region Number" }
+  ];
 
   async function handleSearch(e) {
     e.preventDefault();
     setError("");
-    setResult(null);
-    if (!email.trim()) return setError("Enter an email address.");
+    setResults([]);
+    if (!searchValue.trim()) return setError("Enter a search value.");
+    
     setLoading(true);
     try {
-      const { getDocs, collection, query, where } = await import("firebase/firestore");
-      const q = query(collection(db, "users"), where("email", "==", email.trim().toLowerCase()));
+      const { getDocs, collection, query, where, orderBy } = await import("firebase/firestore");
+      let q;
+      
+      switch (searchType) {
+        case "email":
+          q = query(collection(db, "users"), where("email", "==", searchValue.trim().toLowerCase()));
+          break;
+        case "name":
+          // Search by first name or last name (case insensitive)
+          const searchTerm = searchValue.trim().toLowerCase();
+          q = query(collection(db, "users"), orderBy("firstName"));
+          break;
+        case "store":
+          // Find users with access to this store
+          const storeNum = parseInt(searchValue.trim());
+          if (isNaN(storeNum)) {
+            setError("Store number must be a valid number.");
+            setLoading(false);
+            return;
+          }
+          q = query(collection(db, "users"));
+          break;
+        case "market":
+          const marketNum = parseInt(searchValue.trim());
+          if (isNaN(marketNum)) {
+            setError("Market number must be a valid number.");
+            setLoading(false);
+            return;
+          }
+          q = query(collection(db, "users"), where("selectionType", "==", "market"), where("selectionValue", "==", marketNum));
+          break;
+        case "region":
+          const regionNum = parseInt(searchValue.trim());
+          if (isNaN(regionNum)) {
+            setError("Region number must be a valid number.");
+            setLoading(false);
+            return;
+          }
+          q = query(collection(db, "users"), where("selectionType", "==", "region"), where("selectionValue", "==", regionNum));
+          break;
+        default:
+          q = query(collection(db, "users"));
+      }
+      
       const snap = await getDocs(q);
-      if (snap.empty) {
-        setError("No user found with that email.");
+      let foundUsers = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      // Client-side filtering for complex searches
+      if (searchType === "name") {
+        const searchTerm = searchValue.trim().toLowerCase();
+        foundUsers = foundUsers.filter(user => 
+          user.firstName?.toLowerCase().includes(searchTerm) || 
+          user.lastName?.toLowerCase().includes(searchTerm)
+        );
+      } else if (searchType === "store") {
+        const storeNum = parseInt(searchValue.trim());
+        foundUsers = foundUsers.filter(user => {
+          // Check if user has access to this store
+          if (user.allowedStores && Array.isArray(user.allowedStores)) {
+            return user.allowedStores.includes(storeNum);
+          }
+          // Fallback to old storeNumber field
+          return user.storeNumber === storeNum;
+        });
+      }
+      
+      if (foundUsers.length === 0) {
+        setError(`No users found for ${searchTypes.find(t => t.value === searchType)?.label}: "${searchValue}"`);
       } else {
-        setResult(snap.docs[0].data());
+        setResults(foundUsers);
       }
     } catch (err) {
+      console.error("Search error:", err);
       setError("Error searching: " + (err.message || err));
     } finally {
       setLoading(false);
     }
   }
 
+  function startEdit(user) {
+    setEditingUser(user);
+    setEditForm({
+      firstName: user.firstName || "",
+      lastName: user.lastName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      jobTitle: user.jobTitle || "",
+      storeNumber: user.storeNumber || "",
+      homeStore: user.homeStore || "",
+      selectionType: user.selectionType || "store",
+      selectionValue: user.selectionValue || "",
+      approved: user.approved || false,
+      emailVerified: user.emailVerified || false
+    });
+  }
+
+  async function saveUser() {
+    if (!editingUser) return;
+    
+    setSaving(true);
+    try {
+      const { doc, updateDoc } = await import("firebase/firestore");
+      const userRef = doc(db, "users", editingUser.id);
+      
+      // Calculate allowedStores based on selection
+      let allowedStores = [];
+      if (editForm.selectionType === "store" && editForm.selectionValue) {
+        allowedStores = [parseInt(editForm.selectionValue)];
+      } else if (editForm.selectionType === "market" && editForm.selectionValue) {
+        // Get stores for this market from storeHierarchy
+        const { getAllStoresForSelection } = await import("./storeHierarchy.js");
+        allowedStores = getAllStoresForSelection("market", editForm.selectionValue);
+      } else if (editForm.selectionType === "region" && editForm.selectionValue) {
+        const { getAllStoresForSelection } = await import("./storeHierarchy.js");
+        allowedStores = getAllStoresForSelection("region", editForm.selectionValue);
+      } else if (editForm.selectionType === "bu" && editForm.selectionValue) {
+        const { getAllStoresForSelection } = await import("./storeHierarchy.js");
+        allowedStores = getAllStoresForSelection("bu", editForm.selectionValue);
+      }
+
+      const updateData = {
+        firstName: editForm.firstName,
+        lastName: editForm.lastName,
+        email: editForm.email.toLowerCase(),
+        phone: editForm.phone,
+        jobTitle: editForm.jobTitle,
+        storeNumber: parseInt(editForm.storeNumber) || null,
+        homeStore: (editForm.homeStore || "").trim() || null,
+        selectionType: editForm.selectionType,
+        selectionValue: editForm.selectionValue,
+        allowedStores,
+        approved: editForm.approved,
+        emailVerified: editForm.emailVerified
+      };
+
+      await updateDoc(userRef, updateData);
+      
+      // Update local results
+      setResults(results.map(user => 
+        user.id === editingUser.id 
+          ? { ...user, ...updateData }
+          : user
+      ));
+      
+      setEditingUser(null);
+      setEditForm({});
+    } catch (err) {
+      console.error("Save error:", err);
+      setError("Error saving user: " + (err.message || err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div className="bg-secondary rounded-xl p-4 border border-themed max-w-lg">
-      <form onSubmit={handleSearch} className="flex gap-2 mb-2">
-        <input
-          type="email"
-          className="flex-1 rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-          placeholder="Search user by email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <Button type="submit" disabled={loading}>
-          {loading ? "Searching…" : "Search"}
-        </Button>
-      </form>
-      {error && <div className="text-sm text-red-600 mb-2">{error}</div>}
-      {result && (
-        <div className="text-sm bg-tertiary rounded-xl border border-themed p-3 text-primary">
-          <div><strong>Name:</strong> {result.firstName} {result.lastName}</div>
-          <div><strong>Email:</strong> {result.email}</div>
-          <div><strong>Store:</strong> {result.storeNumber}</div>
-          <div><strong>Job Title:</strong> {result.jobTitle}</div>
-          <div><strong>Phone:</strong> {result.phone}</div>
-          <div><strong>Email Verified:</strong> {result.emailVerified ? "Yes" : "No"}</div>
-          <div><strong>Approved:</strong> {result.approved ? "Yes" : "No"}</div>
+    <div className="space-y-6">
+      <div className="bg-secondary rounded-xl p-6 border border-themed">
+        <h3 className="text-lg font-semibold text-primary mb-4">User Management</h3>
+        
+        {/* Search Form */}
+        <form onSubmit={handleSearch} className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-primary mb-2">Search By:</label>
+              <select
+                value={searchType}
+                onChange={(e) => setSearchType(e.target.value)}
+                className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+              >
+                {searchTypes.map(type => (
+                  <option key={type.value} value={type.value}>{type.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-primary mb-2">Search Value:</label>
+              <input
+                type="text"
+                className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                placeholder={`Enter ${searchTypes.find(t => t.value === searchType)?.label.toLowerCase()}`}
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value)}
+                required
+              />
+            </div>
+            <div className="flex items-end">
+              <Button type="submit" disabled={loading} className="w-full">
+                {loading ? "Searching..." : "Search Users"}
+              </Button>
+            </div>
+          </div>
+        </form>
+
+        {error && <div className="text-sm text-red-600 mt-4 p-3 bg-red-50 rounded-xl">{error}</div>}
+      </div>
+
+      {/* Search Results */}
+      {results.length > 0 && (
+        <div className="bg-secondary rounded-xl p-6 border border-themed">
+          <h4 className="text-md font-semibold text-primary mb-4">
+            Found {results.length} user{results.length !== 1 ? 's' : ''}
+          </h4>
+          
+          <div className="space-y-4">
+            {results.map(user => (
+              <div key={user.id} className="bg-tertiary rounded-xl border border-themed p-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <strong className="text-primary">Name:</strong>
+                    <div>{user.firstName} {user.lastName}</div>
+                  </div>
+                  <div>
+                    <strong className="text-primary">Email:</strong>
+                    <div className="font-mono text-xs">{user.email}</div>
+                  </div>
+                  <div>
+                    <strong className="text-primary">Access:</strong>
+                    <div>{user.selectionType}: {user.selectionValue || user.storeNumber}</div>
+                  </div>
+                  <div>
+                    <strong className="text-primary">Job Title:</strong>
+                    <div>{user.jobTitle || "Not specified"}</div>
+                  </div>
+                  <div>
+                    <strong className="text-primary">Status:</strong>
+                    <div className="space-x-2">
+                      <span className={user.approved ? "text-green-600" : "text-red-600"}>
+                        {user.approved ? "✅ Approved" : "❌ Pending"}
+                      </span>
+                      <span className={user.emailVerified ? "text-green-600" : "text-yellow-600"}>
+                        {user.emailVerified ? "📧 Verified" : "📧 Unverified"}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <strong className="text-primary">Stores:</strong>
+                    <div className="text-xs">
+                      {user.allowedStores && user.allowedStores.length > 0 
+                        ? user.allowedStores.join(", ")
+                        : user.storeNumber || "None"
+                      }
+                    </div>
+                  </div>
+                  {user.homeStore && (
+                    <div>
+                      <strong className="text-primary">Home Store:</strong>
+                      <div className="text-xs">{user.homeStore}</div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* GroupMe Integration Status */}
+                <GroupMeDataDisplay userId={user.id} />
+                
+                <div className="mt-4 flex justify-end">
+                  <Button 
+                    onClick={() => startEdit(user)}
+                    className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2"
+                  >
+                    Edit User
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Modal */}
+      {editingUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-secondary rounded-xl p-6 border border-themed max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold text-primary mb-4">
+              Edit User: {editingUser.firstName} {editingUser.lastName}
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">First Name:</label>
+                <input
+                  type="text"
+                  value={editForm.firstName}
+                  onChange={(e) => setEditForm({...editForm, firstName: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Last Name:</label>
+                <input
+                  type="text"
+                  value={editForm.lastName}
+                  onChange={(e) => setEditForm({...editForm, lastName: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Email:</label>
+                <input
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({...editForm, email: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Phone:</label>
+                <input
+                  type="text"
+                  value={editForm.phone}
+                  onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Job Title:</label>
+                <input
+                  type="text"
+                  value={editForm.jobTitle}
+                  onChange={(e) => setEditForm({...editForm, jobTitle: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Access Level:</label>
+                <select
+                  value={editForm.selectionType}
+                  onChange={(e) => setEditForm({...editForm, selectionType: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                >
+                  <option value="store">Store</option>
+                  <option value="market">Market</option>
+                  <option value="region">Region</option>
+                  <option value="bu">Business Unit</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">
+                  {editForm.selectionType.charAt(0).toUpperCase() + editForm.selectionType.slice(1)} Number:
+                </label>
+                <input
+                  type="number"
+                  value={editForm.selectionValue}
+                  onChange={(e) => setEditForm({...editForm, selectionValue: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Legacy Store Number:</label>
+                <input
+                  type="number"
+                  value={editForm.storeNumber}
+                  onChange={(e) => setEditForm({...editForm, storeNumber: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                  placeholder="For backward compatibility"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-primary mb-1">Home Store:</label>
+                <input
+                  type="number"
+                  value={editForm.homeStore}
+                  onChange={(e) => setEditForm({...editForm, homeStore: e.target.value})}
+                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                  placeholder="Store for QR code generation"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="approved"
+                  checked={editForm.approved}
+                  onChange={(e) => setEditForm({...editForm, approved: e.target.checked})}
+                  className="rounded"
+                />
+                <label htmlFor="approved" className="text-sm text-primary">Account Approved</label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="emailVerified"
+                  checked={editForm.emailVerified}
+                  onChange={(e) => setEditForm({...editForm, emailVerified: e.target.checked})}
+                  className="rounded"
+                />
+                <label htmlFor="emailVerified" className="text-sm text-primary">Email Verified</label>
+              </div>
+            </div>
+
+            {/* GroupMe Data in Edit Modal */}
+            <div className="mb-6">
+              <GroupMeDataDisplay userId={editingUser.id} />
+            </div>
+
+            <div className="flex justify-end space-x-3">
+              <Button
+                onClick={() => {setEditingUser(null); setEditForm({});}}
+                className="bg-gray-500 hover:bg-gray-600 text-white"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={saveUser}
+                disabled={saving}
+                className="bg-green-500 hover:bg-green-600 text-white"
+              >
+                {saving ? "Saving..." : "Save Changes"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1197,9 +2338,6 @@ function UserStatusSearch({ db }) {
 function Shell({ user, onSignOut }) {
   const { db } = useFirebase();
   const isAdmin = user?.email === "sinaptick@gmail.com";
-  const tabs = isAdmin
-    ? ["Dashboard", "Insights", "Generate QR", "Settings", "Admin", "Setup"]
-    : ["Dashboard", "Insights", "Generate QR", "Settings", "Setup"];
   const [active, setActive] = useState("Dashboard");
   const [showContactUs, setShowContactUs] = useState(false);
   const [currentAdminView, setCurrentAdminView] = useState("overview");
@@ -1207,6 +2345,27 @@ function Shell({ user, onSignOut }) {
 
   // Approval gate
   const [userDoc, setUserDoc] = useState(null);
+  
+  // Determine available tabs based on user permissions
+  const getAvailableTabs = () => {
+    let baseTabs = ["Dashboard", "Insights"];
+    
+    // Only show Generate QR for single-store users or admins
+    if (isAdmin || (userDoc && (!userDoc.allowedStores || userDoc.allowedStores.length === 1))) {
+      baseTabs.push("Generate QR");
+    }
+    
+    baseTabs.push("Settings");
+    
+    if (isAdmin) {
+      baseTabs.push("Admin");
+    }
+    
+    baseTabs.push("Setup");
+    return baseTabs;
+  };
+  
+  const tabs = getAvailableTabs();
   useEffect(() => {
     if (!user?.uid) return;
     let mounted = true;
@@ -1283,12 +2442,29 @@ function Shell({ user, onSignOut }) {
 
         if (mounted) {
           setLogs(logsArr);
-          const sortedStores = Array.from(storeSet).sort();
+          
+          // For non-admins, show all their accessible stores
+          const userAccessibleStores = isAdmin 
+            ? Array.from(storeSet)
+            : (userDoc?.allowedStores || (userDoc?.storeNumber ? [userDoc.storeNumber] : [])).filter(store => storeSet.has(String(store)));
+          
+          const sortedStores = userAccessibleStores.sort();
+          
           setStores(sortedStores);
           
-          // Auto-select user's store if it exists in the available stores and no stores are currently selected
-          if (userDoc?.storeNumber && sortedStores.includes(userDoc.storeNumber) && selectedStores.length === 0) {
-            setSelectedStores([userDoc.storeNumber]);
+          // Auto-select user's stores if they exist in the available stores and no stores are currently selected
+          if (selectedStores.length === 0 && sortedStores.length > 0) {
+            if (userDoc?.allowedStores) {
+              // Select all user's accessible stores that have data
+              const userStoresWithData = userDoc.allowedStores.filter(store => sortedStores.includes(String(store)));
+              if (userStoresWithData.length > 0) {
+                setSelectedStores(userStoresWithData.map(String));
+              }
+            } else if (userDoc?.storeNumber && sortedStores.includes(userDoc.storeNumber)) {
+              setSelectedStores([userDoc.storeNumber]);
+            } else {
+              setSelectedStores([sortedStores[0]]); // Fallback to first store
+            }
           }
           
           setWeeks(
@@ -1399,6 +2575,14 @@ function Shell({ user, onSignOut }) {
       return `Week ${weekNum} (${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
     };
     return logs.filter((l) => {
+      // Non-admin users can only see data from their accessible stores
+      if (!isAdmin && userDoc) {
+        const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
+        if (!accessibleStores.some(store => String(l.store) === String(store))) {
+          return false;
+        }
+      }
+      
       if (selectedStores.length && !selectedStores.includes(String(l.store))) return false;
       if (selectedAreas.length && !selectedAreas.includes(l.area)) return false;
       if (selectedWeek.length) {
@@ -1407,7 +2591,7 @@ function Shell({ user, onSignOut }) {
       }
       return true;
     });
-  }, [logs, selectedStores, selectedAreas, selectedWeek]);
+  }, [logs, selectedStores, selectedAreas, selectedWeek, isAdmin, userDoc?.storeNumber, userDoc?.allowedStores]);
 
   // Gate for unapproved users
   if (userDoc && userDoc.approved === false && !isAdmin) {
@@ -1516,16 +2700,17 @@ function Shell({ user, onSignOut }) {
             <CardBody>
               <div className="flex flex-col md:flex-row gap-3 sm:gap-4 mb-4 sm:mb-6 relative">
                 {/* Stores (scroll ~5 items) */}
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-primary mb-1">Select Store(s)</label>
-                  <button
-                    type="button"
-                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
-                    onClick={() => setShowStores(v => !v)}
-                  >
-                    {selectedStores.length ? `${selectedStores.length} selected` : "Choose store(s)"}
-                  </button>
-                  {showStores && (
+                {isAdmin || (userDoc?.allowedStores && userDoc.allowedStores.length > 1) ? (
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-primary mb-1">Select Store(s)</label>
+                    <button
+                      type="button"
+                      className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
+                      onClick={() => setShowStores(v => !v)}
+                    >
+                      {selectedStores.length ? `${selectedStores.length} selected` : "Choose store(s)"}
+                    </button>
+                    {showStores && (
                     <div
                       className="flex flex-col gap-1 w-full sm:min-w-[180px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
                       onMouseLeave={() => setShowStores(false)}
@@ -1549,6 +2734,14 @@ function Shell({ user, onSignOut }) {
                     </div>
                   )}
                 </div>
+              ) : (
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Store</label>
+                  <div className="rounded border border-themed px-2 py-1 text-left w-full bg-tertiary text-primary">
+                    {userDoc?.storeNumber || "Not set"}
+                  </div>
+                </div>
+              )}
 
                 {/* Areas (scroll, Select All) */}
                 <div className="flex-1">
@@ -1644,9 +2837,6 @@ function Shell({ user, onSignOut }) {
               {/* --- Ask Insights AI (replaces old "Analytics and trends" text) --- */}
               <InsightsAI
                 logs={filteredLogs}
-                selectedStores={selectedStores}
-                selectedAreas={selectedAreas}
-                selectedWeek={selectedWeek}
               />
 
               {/* Heatmap below (tooltips: add title attr inside Heatmap tiles if not already) */}
@@ -1671,7 +2861,7 @@ function Shell({ user, onSignOut }) {
           <Card>
             <CardHeader title="Generate QR" subtitle="Create a new QR poster" />
             <CardBody>
-              <GenerateQR />
+              <GenerateQR userDoc={userDoc} isAdmin={isAdmin} />
             </CardBody>
           </Card>
         )}
@@ -1705,7 +2895,7 @@ function Shell({ user, onSignOut }) {
               )}
 
               {currentSettingsView === "my_tickets" && (
-                <MyTickets />
+                <MyTickets onCreateTicket={() => setShowContactUs(true)} />
               )}
 
               {currentSettingsView === "integrations" && (
@@ -1732,7 +2922,7 @@ function Shell({ user, onSignOut }) {
               {/* Admin Navigation */}
               <div className="mb-6">
                 <div className="flex gap-2 border-b border-themed">
-                  {["Overview", "Support Tickets", "User Management", "Spam Protection"].map((view) => (
+                  {["Overview", "Support Tickets", "User Management", "Spam Protection", "Data Cleanup"].map((view) => (
                     <button
                       key={view}
                       onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
@@ -1765,13 +2955,17 @@ function Shell({ user, onSignOut }) {
 
               {currentAdminView === "user_management" && (
                 <div className="space-y-6">
-                  <UserStatusSearch db={db} />
+                  <UserManagement db={db} />
                   <UnapprovedUsersList db={db} />
                 </div>
               )}
 
               {currentAdminView === "spam_protection" && (
                 <BlockedIPsManager />
+              )}
+              
+              {currentAdminView === "data_cleanup" && (
+                <DataCleanupTool db={db} />
               )}
             </CardBody>
           </Card>
@@ -1804,32 +2998,7 @@ function Shell({ user, onSignOut }) {
 // -----------------------------
 // 🏁 Landing Page (Sign in / Register)
 // -----------------------------
-function Landing() {
-  const [mode, setMode] = useState("signin");
-  return (
-    <div className="min-h-screen gradient-bg flex items-center justify-center p-6">
-      <div className="absolute inset-x-0 top-0 p-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-blue-600 flex items-center justify-center">
-            <svg viewBox="0 0 24 24" className="h-6 w-6 text-white fill-current">
-              <path d="M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zM19 13h2v2h-2zM13 13h2v2h-2zM15 15h2v2h-2zM13 17h2v2h-2zM15 19h2v2h-2zM17 17h2v2h-2zM17 13h2v2h-2zM19 15h2v2h-2z"/>
-            </svg>
-          </div>
-          <div className="text-lg font-semibold text-primary">QRcallbox</div>
-        </div>
-        <div className="text-sm text-secondary hidden md:block">Scan • Notify • Assist</div>
-      </div>
-      {mode === "signin" ? (
-        <SignInForm onSwitch={() => setMode("register")} />
-      ) : (
-        <RegisterForm onSwitch={() => setMode("signin")} />
-      )}
-      <footer className="absolute bottom-0 inset-x-0 p-6 text-center text-xs text-muted">
-        © {new Date().getFullYear()} QRcallbox.com
-      </footer>
-    </div>
-  );
-}
+// Landing component moved to components/layout/LandingPage.jsx
 
 // -----------------------------
 // App Root
@@ -1891,7 +3060,7 @@ function AppInner() {
     );
   }
 
-  if (!user) return <Landing />;
+  if (!user) return <LandingPage />;
 
   const handleTermsAccept = () => {
     setShowTerms(false);
