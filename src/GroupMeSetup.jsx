@@ -294,6 +294,60 @@ export default function GroupMeSetup() {
     }
   };
 
+  // Enhanced bot debugging with GroupMe API direct call
+  const debugGroupMeBots = async () => {
+    if (!groupmeUserId) {
+      setError("No GroupMe user ID found. Please reconnect.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      addDebug("Starting enhanced GroupMe bot debugging...");
+
+      const token = await user.getIdToken();
+      
+      // Call our backend to get detailed bot info
+      const res = await fetch(`/api/groupme/debug-bots`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_id: groupmeUserId
+        })
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const result = await res.json();
+      addDebug(`GroupMe API bots: ${JSON.stringify(result.groupme_bots || [])}`);
+      addDebug(`Database bots: ${JSON.stringify(result.database_bots || [])}`);
+      addDebug(`Groups checked: ${JSON.stringify(result.groups || [])}`);
+      
+      if (result.groupme_bots && result.groupme_bots.length > 0) {
+        addDebug(`⚠️ Found ${result.groupme_bots.length} bots in GroupMe:`);
+        result.groupme_bots.forEach((bot, idx) => {
+          addDebug(`  Bot ${idx + 1}: ${bot.name} in group ${bot.group_id} (Bot ID: ${bot.bot_id})`);
+        });
+      } else {
+        addDebug("ℹ️ No bots found in GroupMe API response");
+      }
+      
+    } catch (err) {
+      const errorMsg = `Debug failed: ${err.message}`;
+      addDebug(errorMsg);
+      setError(errorMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Sync missing bots from GroupMe to database
   const syncMissingBots = async () => {
     if (!groupmeUserId) {
@@ -523,6 +577,13 @@ export default function GroupMeSetup() {
                   <p className="text-sm font-medium text-blue-400 mb-2">🔧 Troubleshooting Tools:</p>
                   <div className="flex gap-2 flex-wrap">
                     <button
+                      onClick={debugGroupMeBots}
+                      disabled={loading}
+                      className="text-xs px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg disabled:opacity-50"
+                    >
+                      {loading ? "Debugging..." : "🔍 Debug Bots"}
+                    </button>
+                    <button
                       onClick={syncMissingBots}
                       disabled={loading}
                       className="text-xs px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
@@ -545,6 +606,7 @@ export default function GroupMeSetup() {
                     </button>
                   </div>
                   <p className="text-xs text-blue-300 mt-2">
+                    • <strong>🔍 Debug Bots:</strong> Deep scan of GroupMe API vs database<br/>
                     • <strong>Sync Missing Bots:</strong> Find bots in GroupMe that aren't in database<br/>
                     • <strong>Refresh Profile:</strong> Fix "pattern not match" errors<br/>
                     • <strong>Reload Bots:</strong> Refresh the bot list from database

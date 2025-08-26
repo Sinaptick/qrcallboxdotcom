@@ -1155,6 +1155,109 @@ export const groupmeFixBotStores = onRequest({
   }
 });
 
+// ===== 3b2) Debug GroupMe bots - Enhanced debugging =====
+export const groupmeDebugBots = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    if (!checkRateLimit(clientIp)) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    const { user_id } = req.body || {};
+    if (!user_id) return res.status(400).send("Missing user_id");
+    
+    // Verify user owns this GroupMe account
+    const userTokenDoc = await db.collection("groupme_tokens").doc(String(user_id)).get();
+    if (!userTokenDoc.exists) {
+      return res.status(404).send("No token on file");
+    }
+    
+    const tokenData = userTokenDoc.data();
+    if (tokenData.firebase_uid !== decodedToken.uid && !(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Access denied");
+    }
+    
+    logger.info("Starting enhanced bot debugging", { user_id, firebase_uid: decodedToken.uid });
+    
+    // Get bots from GroupMe API
+    const groupmeResponse = await fetch(`https://api.groupme.com/v3/bots?token=${tokenData.access_token}`);
+    let groupmeBots = [];
+    if (groupmeResponse.ok) {
+      const data = await groupmeResponse.json();
+      groupmeBots = data.response || [];
+      logger.info("GroupMe bots found", { count: groupmeBots.length });
+    } else {
+      logger.error("Failed to fetch GroupMe bots", { status: groupmeResponse.status });
+    }
+    
+    // Get bots from our database
+    const dbBotsSnapshot = await db.collection("groupme_bots")
+      .where("user_id", "==", user_id)
+      .get();
+    
+    const databaseBots = [];
+    dbBotsSnapshot.forEach(doc => {
+      const data = doc.data();
+      databaseBots.push({
+        id: doc.id,
+        bot_id: data.bot_id,
+        group_id: data.group_id,
+        name: data.name,
+        store: data.store
+      });
+    });
+    
+    // Get groups for context
+    const groupsResponse = await fetch(`https://api.groupme.com/v3/groups?token=${tokenData.access_token}`);
+    let groups = [];
+    if (groupsResponse.ok) {
+      const data = await groupsResponse.json();
+      groups = (data.response || []).map(g => ({
+        id: g.id,
+        name: g.name,
+        members_count: g.members ? g.members.length : 0
+      }));
+    }
+    
+    logger.info("Debug results", { 
+      groupme_bots: groupmeBots.length,
+      database_bots: databaseBots.length,
+      groups: groups.length
+    });
+    
+    res.json({
+      success: true,
+      groupme_bots: groupmeBots.map(bot => ({
+        bot_id: bot.bot_id,
+        group_id: bot.group_id,
+        name: bot.name,
+        callback_url: bot.callback_url
+      })),
+      database_bots: databaseBots,
+      groups: groups,
+      summary: {
+        total_groupme_bots: groupmeBots.length,
+        total_database_bots: databaseBots.length,
+        groups_checked: groups.length
+      }
+    });
+    
+  } catch (e) {
+    logger.error("Bot debugging error:", e.message);
+    res.status(500).send(`Error debugging bots: ${e.message}`);
+  }
+});
+
 // ===== 3c) Get GroupMe user profile =====
 export const groupmeUserProfile = onRequest({ 
   region: REGION,
