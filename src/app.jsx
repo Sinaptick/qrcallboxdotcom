@@ -15,6 +15,7 @@ import Setup from "./Setup.jsx";
 import BlockedIPsManager from "./BlockedIPsManager.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
+import QRLockIcon from "./QRLockIcon.jsx";
 import TermsOfService from "./TermsOfService.jsx";
 
 // New modular imports
