@@ -329,7 +329,7 @@ function GenerateQR({ userDoc, isAdmin }) {
 
       <div className="bg-secondary rounded-2xl border border-themed p-4 sm:p-6 grid place-items-center">
         {qrDataUrl ? (
-          <PosterWithQR ref={posterRef} qrDataUrl={qrDataUrl} />
+          <PosterWithQR ref={posterRef} qrDataUrl={qrDataUrl} storeNumber={store} area={area} />
         ) : (
           <div className="w-48 h-48 sm:w-64 sm:h-64 grid place-items-center text-muted border border-themed rounded-xl">
             QR preview
@@ -1336,8 +1336,9 @@ function DataCleanupTool({ db }) {
   }
 
   const handleSearch = async () => {
-    if (!searchCriteria.searchValue.trim()) {
-      setMessage('Please enter a search value');
+    // Allow searching by store only (no area required)
+    if (!searchCriteria.searchValue.trim() && !searchCriteria.store.trim()) {
+      setMessage('Please enter a search value or select a store');
       return;
     }
 
@@ -1351,17 +1352,30 @@ function DataCleanupTool({ db }) {
       let q = collection(db, "logs");
       
       // Build query based on search criteria
-      if (searchCriteria.searchType === 'area') {
-        q = query(q, where("area", "==", searchCriteria.searchValue.trim()));
-      } else if (searchCriteria.searchType === 'store') {
-        q = query(q, where("store", "==", searchCriteria.searchValue.trim()));
-      } else if (searchCriteria.searchType === 'partial_area') {
-        // For partial matches, we'll filter client-side after fetching
-        q = query(q, orderBy("ts", "desc"), limit(1000));
+      let whereConditions = [];
+      let needsClientFiltering = false;
+      
+      // Add store filter if specified
+      if (searchCriteria.store.trim()) {
+        whereConditions.push(where("store", "==", searchCriteria.store.trim()));
       }
       
-      if (searchCriteria.store && searchCriteria.searchType !== 'store') {
-        q = query(q, where("store", "==", searchCriteria.store.trim()));
+      // Add search criteria
+      if (searchCriteria.searchValue.trim()) {
+        if (searchCriteria.searchType === 'area') {
+          whereConditions.push(where("area", "==", searchCriteria.searchValue.trim()));
+        } else if (searchCriteria.searchType === 'store' && !searchCriteria.store.trim()) {
+          whereConditions.push(where("store", "==", searchCriteria.searchValue.trim()));
+        } else if (searchCriteria.searchType === 'partial_area') {
+          needsClientFiltering = true;
+        }
+      }
+      
+      // Build the query
+      if (whereConditions.length > 0) {
+        q = query(q, ...whereConditions, orderBy("ts", "desc"), limit(1000));
+      } else {
+        q = query(q, orderBy("ts", "desc"), limit(1000));
       }
       
       const snapshot = await getDocs(q);
@@ -1372,7 +1386,7 @@ function DataCleanupTool({ db }) {
       }));
       
       // Client-side filtering for partial matches
-      if (searchCriteria.searchType === 'partial_area') {
+      if (needsClientFiltering && searchCriteria.searchType === 'partial_area') {
         const searchTerm = searchCriteria.searchValue.toLowerCase();
         results = results.filter(log => 
           log.area?.toLowerCase().includes(searchTerm)

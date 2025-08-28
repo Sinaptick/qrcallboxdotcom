@@ -338,6 +338,7 @@ export default function Heatmap({
     return out;
   }
 
+
   // Export to PDF
   async function exportToPDF() {
     if (!heatmapRef.current || exporting) return;
@@ -371,11 +372,29 @@ export default function Heatmap({
         }
       });
       
-      // Convert to canvas with black text
+      // Capture the heatmap as canvas
       const canvas = await html2canvas(element, {
         scale: 2,
-        logging: false,
-        backgroundColor: '#ffffff'
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        onclone: function(clonedDoc) {
+          // Ensure all text is black in the clone
+          const clonedCells = clonedDoc.querySelectorAll('.heatmap-cell');
+          clonedCells.forEach(cell => {
+            if (cell.textContent && cell.textContent !== "—") {
+              cell.style.color = '#000000';
+              cell.style.fontWeight = 'bold';
+            }
+          });
+          
+          const clonedTotalCells = clonedDoc.querySelectorAll('[style*="backgroundColor: rgb"]');
+          clonedTotalCells.forEach(cell => {
+            if (cell.style.backgroundColor && cell.style.backgroundColor.includes('rgb') && cell.textContent) {
+              cell.style.color = '#000000';
+              cell.style.fontWeight = 'bold';
+            }
+          });
+        }
       });
       
       // Restore original styles
@@ -393,18 +412,19 @@ export default function Heatmap({
         }
       });
       
-      // Create PDF - A4 landscape for optimal heatmap display and printing
+      // Create PDF - A4 landscape for optimal heatmap display
       const pdf = new jsPDF('landscape', 'pt', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const printMargin = 60;
       
-      // Add header information with print-safe margins
-      const printMargin = 60; // Define margin constant at top for consistency
+      // Add header information
       pdf.setFontSize(16);
       pdf.text('QRCallBox Report', printMargin, printMargin);
       
-      // Start header items closer to title
       let yPos = printMargin + 18;
       
-      // Add stores with same formatting as weeks/areas
+      // Add stores
       if (selectedStores.length > 0) {
         pdf.setFontSize(8);
         pdf.setFont('helvetica', 'bold');
@@ -418,7 +438,6 @@ export default function Heatmap({
       
       // Add week numbers if selected
       if (selectedWeek.length > 0) {
-        // Extract week numbers from the week labels
         const weekNumbers = selectedWeek.map(weekLabel => {
           const match = weekLabel.match(/Week (\d+)/);
           return match ? match[1] : null;
@@ -448,7 +467,6 @@ export default function Heatmap({
         yPos += 12;
       }
       
-      
       yPos += 12;
       
       // Generate and add AI insights
@@ -462,8 +480,7 @@ export default function Heatmap({
         
         pdf.setFontSize(8);
         insights.forEach(insight => {
-          // Split long lines if needed
-          const maxWidth = pdf.internal.pageSize.getWidth() - 80;
+          const maxWidth = pageWidth - 80;
           const lines = pdf.splitTextToSize(insight, maxWidth);
           lines.forEach(line => {
             pdf.text(line, printMargin, yPos);
@@ -473,7 +490,7 @@ export default function Heatmap({
         yPos += 8;
       }
       
-      // Add #1 Response Associate stats
+      // Add top responder stats
       const responderStats = {};
       filtered.forEach(log => {
         const name = log.responderName;
@@ -499,7 +516,7 @@ export default function Heatmap({
       const topResponder = Object.values(responderStats)
         .map(responder => ({
           ...responder,
-          avgResponseTime: Math.round(responder.totalResponseTime / responder.totalResponses / 60), // Convert to minutes
+          avgResponseTime: Math.round(responder.totalResponseTime / responder.totalResponses / 60),
           fastestResponseMin: Math.round(responder.fastestResponse / 60),
           slowestResponseMin: Math.round(responder.slowestResponse / 60)
         }))
@@ -512,35 +529,32 @@ export default function Heatmap({
         yPos += 16;
       }
       
-      // Calculate dimensions to maximize heatmap size while maintaining print safety
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const imgMargin = 20; // Minimal margins for maximum heatmap size
-      const imgWidth = pageWidth - (imgMargin * 2);
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      const maxImgHeight = pageHeight - yPos - 25; // Minimal space for timestamp
-      
-      // Scale down if needed
-      let finalWidth = imgWidth;
-      let finalHeight = imgHeight;
-      if (imgHeight > maxImgHeight) {
-        finalHeight = maxImgHeight;
-        finalWidth = (canvas.width * finalHeight) / canvas.height;
-      }
-      
-      // Add the heatmap image with smaller margins for larger display
+      // Add the captured heatmap image
       const imgData = canvas.toDataURL('image/png');
-      pdf.addImage(imgData, 'PNG', imgMargin, yPos, finalWidth, finalHeight);
+      const availableWidth = pageWidth - (printMargin * 2);
+      const availableHeight = pageHeight - yPos - 60;
       
-      // Add generation date at bottom with print-safe margin
-      const bottomYPos = yPos + finalHeight + 15;
-      pdf.setFontSize(6);
-      pdf.text(`Generated: ${new Date().toLocaleString()}`, printMargin, bottomYPos);
+      // Calculate dimensions to fit the available space while maintaining aspect ratio
+      const imgAspectRatio = canvas.width / canvas.height;
+      let imgWidth = availableWidth;
+      let imgHeight = imgWidth / imgAspectRatio;
       
-      // Ensure content fits on page - warn if close to edge
-      if (bottomYPos > pageHeight - imgMargin) {
-        console.warn('PDF content may extend beyond print-safe area');
+      // If height is too large, scale down
+      if (imgHeight > availableHeight) {
+        imgHeight = availableHeight;
+        imgWidth = imgHeight * imgAspectRatio;
       }
+      
+      // Center the image horizontally
+      const imgX = (pageWidth - imgWidth) / 2;
+      
+      pdf.addImage(imgData, 'PNG', imgX, yPos, imgWidth, imgHeight);
+      
+      yPos += imgHeight + 20;
+      
+      // Add generation date
+      pdf.setFontSize(6);
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, printMargin, yPos);
       
       // Generate filename
       const timestamp = new Date().toISOString().split('T')[0];
@@ -563,8 +577,9 @@ export default function Heatmap({
 
   return (
     <div className="w-full">
-      {/* Export button */}
-      <div className="flex justify-end mb-4">
+      {/* Export buttons */}
+      <div className="flex justify-end gap-3 mb-4">
+        
         <button
           onClick={exportToPDF}
           disabled={exporting || filtered.length === 0}
@@ -577,14 +592,14 @@ export default function Heatmap({
             </>
           ) : (
             <>
-              📄 Export to PDF
+              📄 Export Heatmap
             </>
           )}
         </button>
       </div>
       
       <div className="w-full overflow-x-auto">
-      <div ref={heatmapRef} className="inline-block min-w-full p-4">
+      <div ref={heatmapRef} className="inline-block min-w-full p-8">
         {/* Header row */}
         <div className="grid gap-2" style={{ gridTemplateColumns: `120px repeat(7, 1fr) 20px 90px` }}>
           <div />{/* top-left corner empty */}

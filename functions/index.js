@@ -805,12 +805,28 @@ export const groupmeCreateBot = onRequest({
     // Get user's store number for unique callback URL
     const userDoc = await db.collection("users").doc(decodedToken.uid).get();
     const userData = userDoc.exists ? userDoc.data() : {};
-    const storeNumber = userData.storeNumber || userData.homeStore || "default";
+    const defaultStoreNumber = userData.storeNumber || userData.homeStore || "default";
     
-    // Create unique callback URL using store number, group ID, and timestamp to avoid conflicts
-    const uniqueId = `${storeNumber}_${Date.now().toString(36)}`;
+    // Check if admin is overriding the store number
+    const { admin_store_override } = req.body || {};
+    let finalStoreNumber = defaultStoreNumber;
+    
+    if (admin_store_override && await isAdmin(decodedToken.uid)) {
+      const sanitizedOverride = sanitizeInput(String(admin_store_override), 10);
+      if (/^\d{3,6}$/.test(sanitizedOverride)) {
+        finalStoreNumber = sanitizedOverride;
+        logger.info("Admin override detected", { 
+          admin_uid: decodedToken.uid,
+          original_store: defaultStoreNumber,
+          override_store: finalStoreNumber
+        });
+      }
+    }
+    
+    // Create unique callback URL using final store number, group ID, and timestamp to avoid conflicts
+    const uniqueId = `${finalStoreNumber}_${Date.now().toString(36)}`;
     const callbackUrl = `https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook?group_id=${sanitizedGroupId}&uid=${uniqueId}`;
-    logger.info("Using unique callback URL to avoid conflicts", { callbackUrl, uniqueId, storeNumber });
+    logger.info("Using unique callback URL to avoid conflicts", { callbackUrl, uniqueId, storeNumber: finalStoreNumber });
     
     // Check for existing bots in this group for this user and delete them to prevent callback URL conflicts
     logger.info("Checking for existing bots in group", { group_id: sanitizedGroupId, user_id });
@@ -915,15 +931,27 @@ export const groupmeCreateBot = onRequest({
       
       const groupName = json.response.bot.group_name || "";
       
+      // Extract store number from group name for better accuracy
+      const storeMatch = groupName.match(/^(\d{3,4})\s/);
+      const groupStore = storeMatch ? storeMatch[1] : null;
+      
+      // Priority: admin override > group name extraction > user's default store
+      const botStoreNumber = finalStoreNumber !== defaultStoreNumber ? finalStoreNumber : (groupStore || defaultStoreNumber);
+      
       await db.collection("groupme_bots").doc(json.response.bot.bot_id).set({
         bot_id: json.response.bot.bot_id,
         group_id: sanitizedGroupId,
         user_id: String(user_id),
         name: json.response.bot.name,
-        store: userStore, // Use user's configured store number
+        store: botStoreNumber,
         group_name: groupName, // Store group name for reference
         firebase_uid: decodedToken.uid,
-        createdAt: FieldValue.serverTimestamp()
+        createdAt: FieldValue.serverTimestamp(),
+        // Track admin overrides
+        ...(finalStoreNumber !== defaultStoreNumber && {
+          admin_store_override: true,
+          original_user_store: defaultStoreNumber
+        })
       });
     }
 
@@ -1077,11 +1105,54 @@ export const groupmeSyncBots = onRequest({
       }
     }
     
-    logger.info("Bot sync completed", { synced_count: syncedCount });
+    // Also fix store numbers for existing bots based on group names
+    let fixedCount = 0;
+    for (const groupmeBot of groupmeBots) {
+      // Extract store number from group name (e.g., "2988 Call Box Chat" -> "2988")
+      const groupName = groupmeBot.group_name || "";
+      const storeMatch = groupName.match(/^(\d{3,4})\s/);
+      const groupStore = storeMatch ? storeMatch[1] : null;
+      
+      if (groupStore) {
+        // Find existing bot document
+        const existingBotQuery = await db.collection("groupme_bots")
+          .where("bot_id", "==", groupmeBot.bot_id)
+          .where("firebase_uid", "==", decodedToken.uid)
+          .get();
+          
+        existingBotQuery.forEach(async (doc) => {
+          const botData = doc.data();
+          if (botData.store !== groupStore) {
+            logger.info("Fixing store number for bot", {
+              bot_id: groupmeBot.bot_id,
+              group_name: groupName,
+              old_store: botData.store,
+              new_store: groupStore
+            });
+            
+            try {
+              await doc.ref.update({
+                store: groupStore,
+                updatedAt: FieldValue.serverTimestamp()
+              });
+              fixedCount++;
+            } catch (updateError) {
+              logger.error("Failed to update bot store number", {
+                error: updateError.message,
+                bot_id: groupmeBot.bot_id
+              });
+            }
+          }
+        });
+      }
+    }
+    
+    logger.info("Bot sync completed", { synced_count: syncedCount, fixed_count: fixedCount });
     
     const response = { 
       success: true, 
       synced: syncedCount,
+      fixed: fixedCount,
       total_groupme_bots: groupmeBots.length,
       total_database_bots: botsSnapshot.size
     };
@@ -1316,7 +1387,153 @@ export const groupmeDebugBots = onRequest({
   }
 });
 
-// ===== 3c) Get GroupMe user profile =====
+// ===== 3c) Admin Create Bot for Any Store =====
+export const groupmeAdminCreateBot = onRequest({ 
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin status
+    const decodedToken = await authenticateUser(req);
+    const userIsAdmin = await isAdmin(decodedToken.uid);
+    
+    if (!userIsAdmin) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { owner_user_id, group_id, store_number, bot_name } = req.body || {};
+    
+    // Validate required fields
+    if (!owner_user_id || !group_id || !store_number) {
+      return res.status(400).send("Missing required fields: owner_user_id, group_id, store_number");
+    }
+    
+    // Sanitize inputs
+    const sanitizedGroupId = sanitizeInput(String(group_id), 20);
+    const sanitizedStoreNumber = sanitizeInput(String(store_number), 10);
+    const sanitizedBotName = sanitizeInput(String(bot_name || `Store ${store_number} Bot`), 50);
+    
+    logger.info("Admin creating bot for store", { 
+      admin_uid: decodedToken.uid,
+      owner_user_id,
+      group_id: sanitizedGroupId, 
+      store_number: sanitizedStoreNumber,
+      bot_name: sanitizedBotName
+    });
+    
+    // Verify the owner has a GroupMe token
+    const ownerTokenDoc = await db.collection("groupme_tokens").doc(String(owner_user_id)).get();
+    if (!ownerTokenDoc.exists) {
+      return res.status(404).send("Owner user does not have GroupMe token");
+    }
+    
+    const tokenData = ownerTokenDoc.data();
+    const { access_token } = tokenData;
+    
+    // Create unique callback URL using store number and timestamp
+    const uniqueId = `${sanitizedStoreNumber}_${Date.now().toString(36)}`;
+    const callbackUrl = `https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook?group_id=${sanitizedGroupId}&store=${sanitizedStoreNumber}&uid=${uniqueId}`;
+    
+    // Check for existing bots in this group with the same store number
+    const existingBotsSnapshot = await db.collection("groupme_bots")
+      .where("group_id", "==", sanitizedGroupId)
+      .where("store", "==", sanitizedStoreNumber)
+      .get();
+    
+    if (!existingBotsSnapshot.empty) {
+      return res.status(400).send(`Bot for store ${sanitizedStoreNumber} already exists in this group`);
+    }
+    
+    // Create bot via GroupMe API using owner's token
+    const botRequest = {
+      bot: {
+        group_id: sanitizedGroupId,
+        callback_url: callbackUrl,
+        name: sanitizedBotName
+      }
+    };
+    
+    logger.info("Creating bot via GroupMe API", { botRequest });
+    
+    const response = await fetch("https://api.groupme.com/v3/bots", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ...botRequest,
+        token: access_token
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error("GroupMe bot creation failed", { 
+        status: response.status, 
+        error: errorText 
+      });
+      return res.status(response.status).send(`Failed to create bot: ${errorText}`);
+    }
+    
+    const json = await response.json();
+    const botData = json.response?.bot;
+    
+    if (!botData || !botData.bot_id) {
+      logger.error("Invalid bot creation response", { json });
+      return res.status(500).send("Invalid response from GroupMe API");
+    }
+    
+    // Store bot info in database with admin and owner info
+    const sanitizedBotId = botData.bot_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    
+    await db.collection("groupme_bots").doc(sanitizedBotId).set({
+      bot_id: botData.bot_id,
+      group_id: sanitizedGroupId,
+      user_id: String(owner_user_id), // Original owner
+      firebase_uid: tokenData.firebase_uid, // Original owner's Firebase UID
+      name: botData.name,
+      store: sanitizedStoreNumber,
+      createdAt: FieldValue.serverTimestamp(),
+      // Admin creation tracking
+      created_by_admin: true,
+      admin_uid: decodedToken.uid,
+      callback_url: callbackUrl
+    });
+    
+    logger.info("Admin bot creation successful", {
+      bot_id: botData.bot_id,
+      store: sanitizedStoreNumber,
+      group_id: sanitizedGroupId,
+      admin: decodedToken.uid,
+      owner: owner_user_id
+    });
+    
+    res.json({
+      success: true,
+      bot_id: botData.bot_id,
+      name: botData.name,
+      store: sanitizedStoreNumber,
+      group_id: sanitizedGroupId,
+      message: `Bot created for store ${sanitizedStoreNumber}`
+    });
+    
+  } catch (e) {
+    logger.error("Admin bot creation error:", e.message, e.stack);
+    res.status(500).send(`Error creating admin bot: ${e.message}`);
+  }
+});
+
+// ===== 3d) Get GroupMe user profile =====
 export const groupmeUserProfile = onRequest({ 
   region: REGION,
   cors: { origin: ALLOWED_ORIGINS },
@@ -2002,10 +2219,28 @@ export const s = onRequest({
 // ===== Helper: Send GroupMe notification =====
 async function sendGroupMeNotification(store, area) {
   try {
+    logger.info(`GroupMe notification requested for store: ${store} (type: ${typeof store}), area: ${area}`);
+    
     // Get only bots for the specific store
     const botsSnapshot = await db.collection("groupme_bots")
       .where("store", "==", store)
       .get();
+    
+    logger.info(`Found ${botsSnapshot.size} bots for store ${store}`);
+    
+    // Also log all bots for debugging
+    const allBotsSnapshot = await db.collection("groupme_bots").get();
+    const allBots = [];
+    allBotsSnapshot.forEach(doc => {
+      const data = doc.data();
+      allBots.push({
+        bot_id: data.bot_id,
+        store: data.store,
+        store_type: typeof data.store,
+        group_id: data.group_id
+      });
+    });
+    logger.info(`All bots in database:`, allBots);
     
     if (botsSnapshot.empty) {
       logger.info(`No GroupMe bots found for store ${store}`);
@@ -2230,6 +2465,54 @@ export const getSpamLogs = onRequest({
     res.json({ logs });
   } catch (error) {
     logger.error('Error fetching spam logs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get user data for admin check
+export const getUser = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    // Extract user ID from path
+    const pathParts = req.path.split('/');
+    const uid = pathParts[pathParts.length - 1];
+    
+    if (!uid) {
+      return res.status(400).json({ error: "User ID required" });
+    }
+
+    // Authenticate user using existing helper
+    const decodedToken = await authenticateUser(req);
+    
+    if (decodedToken.uid !== uid) {
+      return res.status(403).json({ error: 'Forbidden - can only access your own user data' });
+    }
+
+    // Get user document using Admin SDK (bypasses Firestore rules)
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userData = userDoc.data();
+    
+    // Return user data including email for admin check
+    res.json({
+      uid: userDoc.id,
+      email: userData.email || '',
+      name: userData.name || '',
+      store: userData.store || '',
+    });
+  } catch (error) {
+    logger.error('Error getting user:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -3,7 +3,7 @@ const POSTER_IMAGE = "/poster-template.png";
 
 
 
-const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl }, ref) {
+const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl, storeNumber, area }, ref) {
   const printRef = useRef();
   const [posterDataUrl, setPosterDataUrl] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +79,17 @@ const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl }, ref) 
           height: 1.55in;
           display: block;
         }
+        .store-info {
+          position: absolute;
+          bottom: 0.02in;
+          left: 50%;
+          transform: translateX(-50%);
+          font-size: 8px;
+          font-family: Arial, sans-serif;
+          text-align: center;
+          color: #333;
+          z-index: 3;
+        }
         @media print {
           body * { visibility: hidden; }
           .label-wrapper, .label-wrapper * { visibility: visible; }
@@ -92,6 +103,7 @@ const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl }, ref) 
             <div class="qr-area">
               <img src="${qrDataUrl}" alt="QR code" />
             </div>
+            ${storeNumber && area ? `<div class="store-info">Store ${storeNumber} - ${area}</div>` : ''}
           </div>
         </div>
       </body></html>`);
@@ -117,6 +129,11 @@ const PosterWithQR = React.forwardRef(function PosterWithQR({ qrDataUrl }, ref) 
           {qrDataUrl && (
             <div className="qr-area" style={{ position: 'absolute', width: '1.55in', height: '1.55in', bottom: '0.20in', left: '50%', transform: 'translateX(-50%)', background: 'white', padding: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <img src={qrDataUrl} alt="QR code" style={{ width: '1.55in', height: '1.55in', display: 'block' }} />
+            </div>
+          )}
+          {storeNumber && area && (
+            <div className="store-info" style={{ position: 'absolute', bottom: '0.02in', left: '50%', transform: 'translateX(-50%)', fontSize: '8px', fontFamily: 'Arial, sans-serif', textAlign: 'center', color: '#333', zIndex: 3 }}>
+              Store {storeNumber} - {area}
             </div>
           )}
         </div>

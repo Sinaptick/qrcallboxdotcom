@@ -238,7 +238,8 @@ export default function GroupMeSetup() {
       const requestBody = {
         user_id: groupmeUserId,
         group_id: selectedGroup,
-        name: "CallBot"
+        name: "CallBot",
+        ...(isAdmin && adminStoreOverride && { admin_store_override: adminStoreOverride })
       };
       addDebug(`Bot creation request: ${JSON.stringify(requestBody)}`);
       
@@ -464,6 +465,84 @@ export default function GroupMeSetup() {
     setGroupmeUserId("");
   };
 
+  // Admin: Create bot for any store
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [adminBotStore, setAdminBotStore] = useState("");
+  const [adminBotOwner, setAdminBotOwner] = useState("");
+  const [adminBotName, setAdminBotName] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminStoreOverride, setAdminStoreOverride] = useState("");
+
+  // Check if current user is admin
+  useEffect(() => {
+    const checkAdminStatus = () => {
+      addDebug(`Admin check starting - User: ${user ? user.uid : 'none'}`);
+      if (!user) {
+        addDebug('No user found, skipping admin check');
+        setIsAdmin(false);
+        return;
+      }
+      
+      // Simple hardcoded admin check using Firebase email
+      const adminStatus = user.email === 'sinaptick@gmail.com';
+      console.log(`Admin check - User email: ${user.email}, Is admin: ${adminStatus}`);
+      addDebug(`Admin check: "${user.email}" === "sinaptick@gmail.com" -> ${adminStatus ? 'ADMIN' : 'NOT ADMIN'}`);
+      setIsAdmin(adminStatus);
+    };
+    checkAdminStatus();
+  }, [user]);
+
+  const createAdminBot = async () => {
+    if (!adminBotStore || !adminBotOwner || !selectedGroup) {
+      setError("Please fill all admin bot fields");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      addDebug(`Creating admin bot for store ${adminBotStore}, owner ${adminBotOwner}`);
+
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/admin-create-bot`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          owner_user_id: adminBotOwner,
+          group_id: selectedGroup,
+          store_number: adminBotStore,
+          bot_name: adminBotName || `Store ${adminBotStore} Bot`
+        })
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const result = await res.json();
+      addDebug(`Admin bot created successfully: ${JSON.stringify(result)}`);
+      
+      // Refresh existing bots list
+      await fetchExistingBots(groupmeUserId);
+      
+      // Clear form
+      setAdminBotStore("");
+      setAdminBotOwner("");
+      setAdminBotName("");
+
+    } catch (err) {
+      const errorMsg = `Admin bot creation failed: ${err.message}`;
+      addDebug(errorMsg);
+      setError(errorMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-secondary rounded-xl p-4 border border-themed">
@@ -475,6 +554,13 @@ export default function GroupMeSetup() {
         {error && (
           <div className="mb-3 p-3 bg-red-900/20 border border-red-500/50 rounded-xl text-red-400 text-sm">
             {error}
+          </div>
+        )}
+
+        {/* Admin Status Debug */}
+        {user && (
+          <div className="mb-3 p-2 bg-gray-900/20 border border-gray-500/50 rounded text-xs text-gray-400">
+            User: {user.email} | Admin: {isAdmin ? '✅ YES' : '❌ NO'} | Connected: {connected ? '✅' : '❌'}
           </div>
         )}
         
@@ -565,6 +651,25 @@ export default function GroupMeSetup() {
                     ))}
                   </select>
                 </div>
+
+                {/* Admin store override for regular bot creation */}
+                {isAdmin && (
+                  <div className="p-3 bg-orange-900/20 border border-orange-500/50 rounded-xl">
+                    <label className="block text-sm font-medium text-orange-400 mb-1">
+                      🛡️ Admin: Override Store Number (Optional):
+                    </label>
+                    <input
+                      type="text"
+                      value={adminStoreOverride}
+                      onChange={(e) => setAdminStoreOverride(e.target.value)}
+                      placeholder="e.g., 2988 (leave blank to auto-detect from group name)"
+                      className="w-full rounded-lg border border-orange-500/50 bg-orange-900/30 text-orange-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    />
+                    <p className="text-xs text-orange-300 mt-1">
+                      As admin, you can specify which store this bot serves instead of using your home store (1458).
+                    </p>
+                  </div>
+                )}
                 
                 {/* Show existing bots */}
                 {existingBots.length > 0 && (
@@ -635,6 +740,75 @@ export default function GroupMeSetup() {
                     • <strong>Reload Bots:</strong> Refresh the bot list from database
                   </p>
                 </div>
+
+                {/* Admin Panel for Multi-Store Bot Creation */}
+                {isAdmin && (
+                  <div className="mt-4 p-3 bg-purple-900/20 border border-purple-500/50 rounded-xl">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium text-purple-400">🛡️ Admin: Multi-Store Bot Creation</p>
+                      <button
+                        onClick={() => setShowAdminPanel(!showAdminPanel)}
+                        className="text-xs text-purple-300 hover:text-purple-200"
+                      >
+                        {showAdminPanel ? "Hide" : "Show"}
+                      </button>
+                    </div>
+                    
+                    {showAdminPanel && (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs font-medium text-purple-300 mb-1">
+                              Store Number:
+                            </label>
+                            <input
+                              type="text"
+                              value={adminBotStore}
+                              onChange={(e) => setAdminBotStore(e.target.value)}
+                              placeholder="e.g., 2988"
+                              className="w-full rounded-lg border border-purple-500/50 bg-purple-900/30 text-purple-100 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-purple-300 mb-1">
+                              Owner GroupMe ID:
+                            </label>
+                            <input
+                              type="text"
+                              value={adminBotOwner}
+                              onChange={(e) => setAdminBotOwner(e.target.value)}
+                              placeholder="e.g., 97510571"
+                              className="w-full rounded-lg border border-purple-500/50 bg-purple-900/30 text-purple-100 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-purple-300 mb-1">
+                            Bot Name (Optional):
+                          </label>
+                          <input
+                            type="text"
+                            value={adminBotName}
+                            onChange={(e) => setAdminBotName(e.target.value)}
+                            placeholder="e.g., Store 2988 CallBot"
+                            className="w-full rounded-lg border border-purple-500/50 bg-purple-900/30 text-purple-100 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          />
+                        </div>
+                        <button
+                          onClick={createAdminBot}
+                          disabled={loading || !selectedGroup || !adminBotStore || !adminBotOwner}
+                          className="w-full text-xs px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg disabled:opacity-50"
+                        >
+                          {loading ? "Creating Admin Bot..." : "Create Bot for Store"}
+                        </button>
+                        <p className="text-xs text-purple-300">
+                          Creates a bot for any store using an existing GroupMe user's token. 
+                          The owner must have connected their GroupMe account first.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
                 
                 <Button 
                   onClick={handleCreateBot} 
@@ -654,6 +828,49 @@ export default function GroupMeSetup() {
                 No groups found. Make sure you're a member of at least one GroupMe group.
               </div>
             )}
+          </div>
+        )}
+
+        {/* Admin: Fix Existing Bot Store Numbers */}
+        {isAdmin && existingBots.length > 0 && (
+          <div className="mt-4 p-4 bg-orange-900/20 border border-orange-500/50 rounded-xl">
+            <h3 className="text-lg font-semibold text-orange-400 mb-2">
+              🛡️ Admin: Fix Bot Store Numbers
+            </h3>
+            <p className="text-sm text-gray-300 mb-3">
+              Update existing bots with correct store numbers based on their group names.
+            </p>
+            <Button 
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  const res = await fetch('/api/groupme/sync-bots', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${await user.getIdToken()}`
+                    },
+                    body: JSON.stringify({
+                      user_id: groupmeUserId
+                    })
+                  });
+                  const result = await res.json();
+                  if (result.success) {
+                    addDebug(`Bot store numbers updated successfully - Fixed: ${result.fixed || 0} bots`);
+                    await fetchExistingBots(groupmeUserId); // Refresh the list
+                  } else {
+                    throw new Error(result.error);
+                  }
+                } catch (err) {
+                  addDebug(`Failed to fix bot store numbers: ${err.message}`);
+                  setError(err.message);
+                }
+                setLoading(false);
+              }}
+              disabled={loading}
+            >
+              {loading ? "Fixing Store Numbers..." : "Fix Bot Store Numbers"}
+            </Button>
           </div>
         )}
         
