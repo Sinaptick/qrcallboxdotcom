@@ -14,6 +14,9 @@ import MyTickets from "./MyTickets.jsx";
 import Setup from "./Setup.jsx";
 import BlockedIPsManager from "./BlockedIPsManager.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
+import { Card, CardHeader, CardBody } from "./components/shared/Card.jsx";
+import { Input } from "./components/shared/FormField.jsx";
+import { Tabs } from "./components/ui/Tabs.jsx";
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
 import QRLockIcon from "./QRLockIcon.jsx";
 import TermsOfService from "./TermsOfService.jsx";
@@ -55,69 +58,6 @@ import {
 // -----------------------------
 // 🧱 UI Primitives (Tailwind)
 // -----------------------------
-function Card({ children, className = "" }) {
-  return (
-    <div className={`bg-secondary rounded-2xl shadow-sm ring-1 ring-black/5 border border-themed ${className}`}>
-      {children}
-    </div>
-  );
-}
-function CardHeader({ title, subtitle }) {
-  return (
-    <div className="p-6 border-b border-themed">
-      <h2 className="text-xl font-semibold tracking-tight text-primary">{title}</h2>
-      {subtitle ? <p className="text-sm text-muted mt-1">{subtitle}</p> : null}
-    </div>
-  );
-}
-function CardBody({ children, className = "" }) {
-  return <div className={`p-6 ${className}`}>{children}</div>;
-}
-function Input({
-  label,
-  type = "text",
-  value,
-  onChange,
-  placeholder,
-  required,
-  name,
-  autoComplete,
-}) {
-  return (
-    <label className="block">
-      <span className="text-sm font-medium text-primary">{label}</span>
-      <input
-        className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
-        type={type}
-        name={name}
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        required={required}
-        autoComplete={autoComplete}
-      />
-    </label>
-  );
-}
-function Tabs({ tabs, current, onChange }) {
-  return (
-    <div className="flex gap-1 sm:gap-2 flex-wrap">
-      {tabs.map((t) => (
-        <button
-          key={t}
-          onClick={() => onChange(t)}
-          className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm rounded-xl border ${
-            current === t
-              ? "bg-indigo-600 text-white border-indigo-500"
-              : "bg-tertiary text-primary border-themed hover:bg-secondary"
-          }`}
-        >
-          {t}
-        </button>
-      ))}
-    </div>
-  );
-}
 function Banner({ children }) {
   return (
     <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-800 text-sm">
@@ -982,7 +922,7 @@ function Dashboard() {
 function TopResponders({ db }) {
   const [responders, setResponders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [timePeriod, setTimePeriod] = useState('daily');
+  const [timePeriod, setTimePeriod] = useState('weekly');
 
   useEffect(() => {
     let mounted = true;
@@ -1000,9 +940,8 @@ function TopResponders({ db }) {
             startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             break;
           case 'weekly':
-            const dayOfWeek = now.getDay();
-            startDate = new Date(now.getTime() - (dayOfWeek * 24 * 60 * 60 * 1000));
-            startDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+            // Rolling 7 days (last 7 days from now)
+            startDate = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
             break;
           case 'monthly':
             startDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1099,7 +1038,7 @@ function TopResponders({ db }) {
   const getPeriodLabel = () => {
     switch (timePeriod) {
       case 'daily': return 'Today';
-      case 'weekly': return 'This Week';  
+      case 'weekly': return 'Last 7 days';  
       case 'monthly': return 'This Month';
       case 'alltime': return 'All Time';
       default: return 'Today';
@@ -1116,7 +1055,7 @@ function TopResponders({ db }) {
           className="px-3 py-1 text-sm border border-themed bg-secondary rounded"
         >
           <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
+          <option value="weekly">Last 7 days</option>
           <option value="monthly">Monthly</option>
           <option value="alltime">All Time</option>
         </select>
@@ -1675,7 +1614,12 @@ function GroupMeDataDisplay({ userId, isAdmin }) {
     
     try {
       const token = await user.getIdToken();
-      const response = await fetch(`/api/groupme/admin-user-data?firebase_uid=${encodeURIComponent(userId)}`, {
+      // Try direct function URL if rewrite fails (fallback for deployment issues)
+      const baseUrl = window.location.hostname === 'localhost' 
+        ? '/api/groupme/admin-user-data'
+        : 'https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeAdminUserData';
+      
+      const response = await fetch(`${baseUrl}?firebase_uid=${encodeURIComponent(userId)}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -1987,14 +1931,29 @@ function UserManagement({ db }) {
           user.lastName?.toLowerCase().includes(searchTerm)
         );
       } else if (searchType === "store") {
-        const storeNum = parseInt(searchValue.trim());
+        const storeStr = searchValue.trim();
+        const storeNum = parseInt(storeStr);
         foundUsers = foundUsers.filter(user => {
           // Check if user has access to this store
           if (user.allowedStores && Array.isArray(user.allowedStores)) {
-            return user.allowedStores.includes(storeNum);
+            // Check both string and number versions since data might be inconsistent
+            return user.allowedStores.includes(storeNum) || 
+                   user.allowedStores.includes(storeStr) ||
+                   user.allowedStores.some(s => String(s) === storeStr);
           }
-          // Fallback to old storeNumber field
-          return user.storeNumber === storeNum;
+          // Check homeStore field (might be string or number)
+          if (user.homeStore) {
+            return String(user.homeStore) === storeStr;
+          }
+          // Fallback to old storeNumber field (might be string or number)
+          if (user.storeNumber) {
+            return String(user.storeNumber) === storeStr;
+          }
+          // Check store field as well
+          if (user.store) {
+            return String(user.store) === storeStr;
+          }
+          return false;
         });
       }
       

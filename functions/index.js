@@ -2219,28 +2219,10 @@ export const s = onRequest({
 // ===== Helper: Send GroupMe notification =====
 async function sendGroupMeNotification(store, area) {
   try {
-    logger.info(`GroupMe notification requested for store: ${store} (type: ${typeof store}), area: ${area}`);
-    
     // Get only bots for the specific store
     const botsSnapshot = await db.collection("groupme_bots")
       .where("store", "==", store)
       .get();
-    
-    logger.info(`Found ${botsSnapshot.size} bots for store ${store}`);
-    
-    // Also log all bots for debugging
-    const allBotsSnapshot = await db.collection("groupme_bots").get();
-    const allBots = [];
-    allBotsSnapshot.forEach(doc => {
-      const data = doc.data();
-      allBots.push({
-        bot_id: data.bot_id,
-        store: data.store,
-        store_type: typeof data.store,
-        group_id: data.group_id
-      });
-    });
-    logger.info(`All bots in database:`, allBots);
     
     if (botsSnapshot.empty) {
       logger.info(`No GroupMe bots found for store ${store}`);
@@ -2270,20 +2252,25 @@ async function sendGroupMeNotification(store, area) {
       });
 
       // Log bot post activity for admin tracking
-      try {
-        await db.collection("groupme_bot_posts").add({
-          timestamp: FieldValue.serverTimestamp(),
-          bot_id: botData.bot_id,
-          group_id: botData.group_id,
-          store: store,
-          area: area,
-          message: message,
-          success: postResponse.ok,
-          response_status: postResponse.status,
-          firebase_uid: botData.firebase_uid
-        });
-      } catch (logError) {
-        logger.error("Failed to log bot post activity", { error: logError.message });
+      // Skip logging for store 1458 to avoid affecting leaderboard tracking
+      if (store !== "1458") {
+        try {
+          await db.collection("groupme_bot_posts").add({
+            timestamp: FieldValue.serverTimestamp(),
+            bot_id: botData.bot_id,
+            group_id: botData.group_id,
+            store: store,
+            area: area,
+            message: message,
+            success: postResponse.ok,
+            response_status: postResponse.status,
+            firebase_uid: botData.firebase_uid
+          });
+        } catch (logError) {
+          logger.error("Failed to log bot post activity", { error: logError.message });
+        }
+      } else {
+        logger.info("Skipping leaderboard logging for store 1458 (testing purposes)");
       }
     }
   } catch (e) {
@@ -2294,33 +2281,63 @@ async function sendGroupMeNotification(store, area) {
 // ===== Helper: Send Workvivo notification =====
 async function sendWorkvivoNotification(store, area) {
   try {
-    // Get all connected Workvivo users
-    const workvivoSnapshot = await db.collection("workvivo_config")
-      .where("connected", "==", true)
-      .where("selectedChannel", "!=", null)
-      .get();
-    
-    if (workvivoSnapshot.empty) {
-      logger.info("No connected Workvivo users found for notifications");
-      return;
-    }
-    
-    // Use local time zone (assuming PST/PDT for your location)
-    const now = new Date();
-    const localTime = new Date(now.getTime() - (4 * 60 * 60 * 1000)); // Subtract 4 hours to convert from UTC to PDT
-    const message = `🔔 Customer assistance needed in ${sanitizeInput(area, 50)} at ${localTime.toLocaleTimeString()}`;
-    
-    // Send notifications to all connected Workvivo users
-    for (const configDoc of workvivoSnapshot.docs) {
-      const userId = configDoc.id;
+    // Only store 1458 uses Workvivo via the simple bot
+    if (store === "1458") {
+      const now = new Date();
+      const localTime = new Date(now.getTime() - (4 * 60 * 60 * 1000)); // Subtract 4 hours to convert from UTC to PDT
+      const message = `🔔 Customer assistance needed in ${sanitizeInput(area, 50)} at ${localTime.toLocaleTimeString()}`;
       
       try {
-        await postToWorkvivo(message, userId);
-        logger.info("Workvivo notification sent", { userId, area, store });
+        logger.info("Attempting to send to Store 1458 Workvivo bot", { 
+          url: "http://34.45.52.250:5002/send",
+          message,
+          store,
+          area
+        });
+        
+        const response = await fetch("http://34.45.52.250:5002/send", {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "User-Agent": "QRCallBox-Firebase-Function"
+          },
+          body: JSON.stringify({ message })
+        });
+        
+        const responseText = await response.text();
+        logger.info("Store 1458 Workvivo bot response", { 
+          store, 
+          area, 
+          status: response.status, 
+          statusText: response.statusText,
+          response: responseText,
+          success: response.ok
+        });
+        
+        if (!response.ok) {
+          logger.error("Store 1458 Workvivo bot returned non-OK status", {
+            status: response.status,
+            statusText: response.statusText,
+            response: responseText
+          });
+        }
+        
+        return;
       } catch (error) {
-        logger.error("Failed to send Workvivo notification", { userId, error: error.message });
+        logger.error("Store 1458 Workvivo notification failed", { 
+          store, 
+          area, 
+          error: error.message,
+          errorCode: error.code,
+          errorStack: error.stack
+        });
+        return;
       }
     }
+    
+    // Other stores don't use Workvivo
+    logger.info("Workvivo not configured for store", { store });
+    return;
   } catch (e) {
     logger.error("Workvivo notification error:", e.message);
   }

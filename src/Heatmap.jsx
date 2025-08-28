@@ -36,7 +36,7 @@ export default function Heatmap({
   const [exporting, setExporting] = useState(false);
   const heatmapRef = useRef(null);
 
-  // fixed axis
+  // fixed axis - explicitly set in English to avoid locale issues
   const dayLabels = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"]; // Sat → Fri
   const hours = useMemo(() => {
     const out = [];
@@ -67,7 +67,7 @@ export default function Heatmap({
     const weekNum = Math.floor(diffDays / 7) + 1;
     const ws = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
     const we = new Date(ws.getTime() + 6 * 24 * 60 * 60 * 1000);
-    return `Week ${weekNum} (${ws.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${we.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
+    return `Week ${weekNum} (${ws.toLocaleDateString("en-US", { month: "short", day: "numeric" })}–${we.toLocaleDateString("en-US", { month: "short", day: "numeric" })})`;
   }
 
   // fetch logs once; use our own Firestore instance to avoid “Expected first argument…” errors
@@ -351,46 +351,64 @@ export default function Heatmap({
       // Temporarily apply PDF-specific styling (black text for better readability)
       const heatmapCells = element.querySelectorAll('.heatmap-cell');
       const totalCells = element.querySelectorAll('[style*="backgroundColor: rgb"]');
+      const allTextElements = element.querySelectorAll('.text-primary, .text-xs, .text-sm');
       const originalStyles = [];
       
-      // Store original styles and apply black text
+      // Store original styles and apply black text for all elements
       heatmapCells.forEach((cell, index) => {
-        originalStyles[index] = cell.style.color;
+        originalStyles[index] = { element: cell, color: cell.style.color, fontWeight: cell.style.fontWeight };
         if (cell.textContent && cell.textContent !== "—") {
           cell.style.color = '#000000';
           cell.style.fontWeight = 'bold';
         }
       });
       
+      // Make labels black too (day labels, time labels, totals)
+      allTextElements.forEach((textEl, index) => {
+        const baseIndex = heatmapCells.length + index;
+        originalStyles[baseIndex] = { element: textEl, color: textEl.style.color, fontWeight: textEl.style.fontWeight };
+        textEl.style.color = '#000000';
+        textEl.style.fontWeight = 'bold';
+      });
+      
       // Make total row/column text black too
-      totalCells.forEach(cell => {
+      totalCells.forEach((cell, index) => {
         if (cell.style.backgroundColor && cell.style.backgroundColor.includes('rgb') && cell.textContent) {
-          const originalColor = cell.style.color;
+          const baseIndex = heatmapCells.length + allTextElements.length + index;
+          originalStyles[baseIndex] = { element: cell, color: cell.style.color, fontWeight: cell.style.fontWeight };
           cell.style.color = '#000000';
           cell.style.fontWeight = 'bold';
-          originalStyles.push({ element: cell, color: originalColor, fontWeight: cell.style.fontWeight });
         }
       });
       
-      // Capture the heatmap as canvas
+      // Capture the heatmap as canvas with balanced quality/size
       const canvas = await html2canvas(element, {
-        scale: 2,
+        scale: 1.5, // Balanced scale - good quality without huge file size
         useCORS: true,
         backgroundColor: '#ffffff',
+        logging: false,
+        width: element.scrollWidth,
+        height: element.scrollHeight,
         onclone: function(clonedDoc) {
           // Ensure all text is black in the clone
-          const clonedCells = clonedDoc.querySelectorAll('.heatmap-cell');
-          clonedCells.forEach(cell => {
+          const clonedHeatmapCells = clonedDoc.querySelectorAll('.heatmap-cell');
+          clonedHeatmapCells.forEach(cell => {
             if (cell.textContent && cell.textContent !== "—") {
-              cell.style.color = '#000000';
+              cell.style.color = '#000000 !important';
               cell.style.fontWeight = 'bold';
             }
+          });
+          
+          const clonedTextElements = clonedDoc.querySelectorAll('.text-primary, .text-xs, .text-sm');
+          clonedTextElements.forEach(textEl => {
+            textEl.style.color = '#000000 !important';
+            textEl.style.fontWeight = 'bold';
           });
           
           const clonedTotalCells = clonedDoc.querySelectorAll('[style*="backgroundColor: rgb"]');
           clonedTotalCells.forEach(cell => {
             if (cell.style.backgroundColor && cell.style.backgroundColor.includes('rgb') && cell.textContent) {
-              cell.style.color = '#000000';
+              cell.style.color = '#000000 !important';
               cell.style.fontWeight = 'bold';
             }
           });
@@ -398,99 +416,66 @@ export default function Heatmap({
       });
       
       // Restore original styles
-      heatmapCells.forEach((cell, index) => {
-        cell.style.color = originalStyles[index];
-        cell.style.fontWeight = 'medium';
-      });
-      
-      // Restore total cell styles
-      const totalStylesStart = heatmapCells.length;
-      totalCells.forEach((cell, index) => {
-        if (originalStyles[totalStylesStart + index]) {
-          cell.style.color = originalStyles[totalStylesStart + index].color;
-          cell.style.fontWeight = originalStyles[totalStylesStart + index].fontWeight;
+      originalStyles.forEach(({ element, color, fontWeight }) => {
+        if (element) {
+          element.style.color = color || '';
+          element.style.fontWeight = fontWeight || '';
         }
       });
       
-      // Create PDF - A4 landscape for optimal heatmap display
+      // Create PDF - A4 landscape for optimal heatmap display, optimized for single page
       const pdf = new jsPDF('landscape', 'pt', 'a4');
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
-      const printMargin = 60;
+      const printMargin = 40; // Smaller margin to fit more content
       
-      // Add header information
-      pdf.setFontSize(16);
+      // Add compact header information
+      pdf.setFontSize(14);
       pdf.text('QRCallBox Report', printMargin, printMargin);
       
-      let yPos = printMargin + 18;
+      let yPos = printMargin + 20;
       
-      // Add stores
-      if (selectedStores.length > 0) {
-        pdf.setFontSize(8);
-        pdf.setFont('helvetica', 'bold');
-        const labelWidth = pdf.getTextWidth('Stores: ');
-        pdf.text('Stores: ', printMargin, yPos);
-        pdf.setFont('helvetica', 'normal');
-        const storeText = selectedStores.join(' - ');
-        pdf.text(storeText, printMargin + labelWidth, yPos);
-        yPos += 12;
-      }
-      
-      // Add week numbers if selected
+      // Compact filter info on one line
+      const filterParts = [];
+      if (selectedStores.length > 0) filterParts.push(`Stores: ${selectedStores.join(', ')}`);
       if (selectedWeek.length > 0) {
         const weekNumbers = selectedWeek.map(weekLabel => {
           const match = weekLabel.match(/Week (\d+)/);
           return match ? match[1] : null;
         }).filter(Boolean);
-        
-        if (weekNumbers.length > 0) {
-          pdf.setFontSize(8);
-          pdf.setFont('helvetica', 'bold');
-          const labelWidth = pdf.getTextWidth('Weeks: ');
-          pdf.text('Weeks: ', printMargin, yPos);
-          pdf.setFont('helvetica', 'normal');
-          const weekText = weekNumbers.join(', ');
-          pdf.text(weekText, printMargin + labelWidth, yPos);
-          yPos += 12;
-        }
+        if (weekNumbers.length > 0) filterParts.push(`Weeks: ${weekNumbers.join(', ')}`);
       }
+      if (selectedAreas.length > 0) filterParts.push(`Areas: ${selectedAreas.join(', ')}`);
       
-      // Add areas if selected
-      if (selectedAreas.length > 0) {
-        pdf.setFontSize(8);
-        pdf.setFont('helvetica', 'bold');
-        const labelWidth = pdf.getTextWidth('Areas: ');
-        pdf.text('Areas: ', printMargin, yPos);
-        pdf.setFont('helvetica', 'normal');
-        const areaText = selectedAreas.join(', ');
-        pdf.text(areaText, printMargin + labelWidth, yPos);
+      if (filterParts.length > 0) {
+        pdf.setFontSize(7);
+        pdf.text(filterParts.join(' | '), printMargin, yPos);
         yPos += 12;
       }
       
-      yPos += 12;
-      
-      // Generate and add AI insights
+      // Compact AI insights - all insights but more compact
       const analysis = analyzeActivity(filtered);
       const insights = generateSummary(analysis);
       
       if (insights.length > 0) {
-        pdf.setFontSize(12);
+        pdf.setFontSize(10);
         pdf.text('Activity Insights', printMargin, yPos);
-        yPos += 16;
+        yPos += 12;
         
-        pdf.setFontSize(8);
+        pdf.setFontSize(7);
+        // Process all insights with proper text wrapping
         insights.forEach(insight => {
-          const maxWidth = pageWidth - 80;
+          const maxWidth = pageWidth - (printMargin * 2); // Use full width minus margins
           const lines = pdf.splitTextToSize(insight, maxWidth);
           lines.forEach(line => {
             pdf.text(line, printMargin, yPos);
-            yPos += 12;
+            yPos += 9; // Slightly more spacing for readability
           });
         });
-        yPos += 8;
+        yPos += 6;
       }
       
-      // Add top responder stats
+      // Compact top responder stats
       const responderStats = {};
       filtered.forEach(log => {
         const name = log.responderName;
@@ -523,38 +508,37 @@ export default function Heatmap({
         .sort((a, b) => b.totalResponses - a.totalResponses)[0];
       
       if (topResponder) {
-        pdf.setFontSize(8);
+        pdf.setFontSize(6);
         const topAssociateText = `Top Associate: ${topResponder.name} with ${topResponder.totalResponses} calls, ${topResponder.avgResponseTime}m avg response time!`;
         pdf.text(topAssociateText, printMargin, yPos);
-        yPos += 16;
+        yPos += 12;
       }
       
-      // Add the captured heatmap image
-      const imgData = canvas.toDataURL('image/png');
+      // Calculate maximum available space for heatmap
       const availableWidth = pageWidth - (printMargin * 2);
-      const availableHeight = pageHeight - yPos - 60;
+      const availableHeight = pageHeight - yPos - 30; // Leave space for footer
       
-      // Calculate dimensions to fit the available space while maintaining aspect ratio
+      // Add the captured heatmap image - maximize size while maintaining aspect ratio
+      const imgData = canvas.toDataURL('image/jpeg', 0.85); // JPEG with good quality for smaller file size
       const imgAspectRatio = canvas.width / canvas.height;
+      
       let imgWidth = availableWidth;
       let imgHeight = imgWidth / imgAspectRatio;
       
-      // If height is too large, scale down
+      // If height exceeds available space, scale to fit height
       if (imgHeight > availableHeight) {
         imgHeight = availableHeight;
         imgWidth = imgHeight * imgAspectRatio;
       }
       
-      // Center the image horizontally
+      // Center the heatmap horizontally
       const imgX = (pageWidth - imgWidth) / 2;
       
       pdf.addImage(imgData, 'PNG', imgX, yPos, imgWidth, imgHeight);
       
-      yPos += imgHeight + 20;
-      
-      // Add generation date
-      pdf.setFontSize(6);
-      pdf.text(`Generated: ${new Date().toLocaleString()}`, printMargin, yPos);
+      // Add compact generation date at bottom
+      pdf.setFontSize(5);
+      pdf.text(`Generated: ${new Date().toLocaleString("en-US")}`, printMargin, pageHeight - 15);
       
       // Generate filename
       const timestamp = new Date().toISOString().split('T')[0];
