@@ -802,7 +802,15 @@ export const groupmeCreateBot = onRequest({
     const { access_token } = tokenData;
     logger.info("Using access token", { hasToken: !!access_token });
 
-    const callbackUrl = `https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook?group_id=${sanitizedGroupId}`;
+    // Get user's store number for unique callback URL
+    const userDoc = await db.collection("users").doc(decodedToken.uid).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+    const storeNumber = userData.storeNumber || userData.homeStore || "default";
+    
+    // Create unique callback URL using store number, group ID, and timestamp to avoid conflicts
+    const uniqueId = `${storeNumber}_${Date.now().toString(36)}`;
+    const callbackUrl = `https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook?group_id=${sanitizedGroupId}&uid=${uniqueId}`;
+    logger.info("Using unique callback URL to avoid conflicts", { callbackUrl, uniqueId, storeNumber });
     
     // Check for existing bots in this group for this user and delete them to prevent callback URL conflicts
     logger.info("Checking for existing bots in group", { group_id: sanitizedGroupId, user_id });
