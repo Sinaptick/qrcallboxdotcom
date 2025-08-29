@@ -18,6 +18,7 @@ import { Card, CardHeader, CardBody } from "./components/shared/Card.jsx";
 import { Input } from "./components/shared/FormField.jsx";
 import { Tabs } from "./components/ui/Tabs.jsx";
 import FilterControls from "./components/dashboard/FilterControls.jsx";
+import { useInsightsData } from "./hooks/useInsightsData.js";
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
 import QRLockIcon from "./QRLockIcon.jsx";
 import TermsOfService from "./TermsOfService.jsx";
@@ -2352,22 +2353,8 @@ function Shell({ user, onSignOut }) {
     return () => { mounted = false; };
   }, [user, db]);
 
-  // Insights filters + data
-  const [stores, setStores] = useState([]);
-  const [selectedStores, setSelectedStores] = useState([]);
-
-  const [weeks, setWeeks] = useState([]);
-  const [selectedWeek, setSelectedWeek] = useState([]);
-
-  const [areas, setAreas] = useState([]);
-  const [selectedAreas, setSelectedAreas] = useState([]);
-
-  const [showStores, setShowStores] = useState(false);
-  const [showWeeks, setShowWeeks] = useState(false);
-  const [showAreas, setShowAreas] = useState(false);
-
-  const [logs, setLogs] = useState([]);
-  const [logsLoading, setLogsLoading] = useState(false);
+  // Insights data using custom hook
+  const insightsData = useInsightsData(active, db);
 
   // Load logs + build options
   useEffect(() => {
