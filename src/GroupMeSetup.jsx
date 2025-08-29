@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Button from "./Button.jsx";
 import { useFirebase } from "./hooks/useFirebase.js";
 
@@ -22,17 +22,31 @@ export default function GroupMeSetup() {
   const [groupmeUserId, setGroupmeUserId] = useState("");
   const [debugInfo, setDebugInfo] = useState([]);
   const [existingBots, setExistingBots] = useState([]);
+  
+  // Refs to track event listeners and timeouts
+  const messageHandlerRef = useRef(null);
+  const cleanupTimeoutRef = useRef(null);
 
   // Check connection status on load
   useEffect(() => {
     checkConnectionStatus();
+    
+    // Cleanup on unmount
+    return () => {
+      if (messageHandlerRef.current) {
+        window.removeEventListener('message', messageHandlerRef.current);
+      }
+      if (cleanupTimeoutRef.current) {
+        clearTimeout(cleanupTimeoutRef.current);
+      }
+    };
   }, [user]);
 
-  const addDebug = (message) => {
+  const addDebug = useCallback((message) => {
     const timestamp = new Date().toLocaleTimeString();
     setDebugInfo(prev => [...prev, `${timestamp}: ${message}`]);
     console.log(`[GroupMe Debug] ${message}`);
-  };
+  }, []);
 
   const checkConnectionStatus = async () => {
     addDebug(`Starting connection check. User: ${user ? user.uid : 'none'}`);
@@ -52,7 +66,8 @@ export default function GroupMeSetup() {
         addDebug(`Setting connected with user ID: ${storedUserId}`);
         setGroupmeUserId(storedUserId);
         setConnected(true);
-        await fetchGroups(storedUserId);
+        // Load groups and bots concurrently
+        await loadUserData(storedUserId);
       } else {
         addDebug("No connection found - user needs to connect");
       }
@@ -67,6 +82,14 @@ export default function GroupMeSetup() {
     if (!user) {
       setError("Please sign in first");
       return;
+    }
+    
+    // Clean up any existing listener before adding new one
+    if (messageHandlerRef.current) {
+      window.removeEventListener('message', messageHandlerRef.current);
+    }
+    if (cleanupTimeoutRef.current) {
+      clearTimeout(cleanupTimeoutRef.current);
     }
     
     setError("");
@@ -94,20 +117,57 @@ export default function GroupMeSetup() {
           localStorage.setItem(`groupme_user_id_${user.uid}`, userId);
           setGroupmeUserId(userId);
           setConnected(true);
-          fetchGroups(userId);
           
-          // Remove the event listener
+          // Load groups and bots concurrently
+          loadUserData(userId);
+          
+          // Clean up the event listener
           window.removeEventListener('message', handleMessage);
+          messageHandlerRef.current = null;
+          
+          // Clear the timeout
+          if (cleanupTimeoutRef.current) {
+            clearTimeout(cleanupTimeoutRef.current);
+            cleanupTimeoutRef.current = null;
+          }
         }
       }
     };
     
+    // Store reference to handler for cleanup
+    messageHandlerRef.current = handleMessage;
     window.addEventListener('message', handleMessage);
     
     // Clean up listener after 5 minutes
-    setTimeout(() => {
-      window.removeEventListener('message', handleMessage);
+    cleanupTimeoutRef.current = setTimeout(() => {
+      if (messageHandlerRef.current) {
+        window.removeEventListener('message', messageHandlerRef.current);
+        messageHandlerRef.current = null;
+      }
     }, 300000);
+  };
+
+  // Concurrent data loading for better performance
+  const loadUserData = async (userId) => {
+    setLoading(true);
+    try {
+      // Load groups and bots concurrently instead of sequentially
+      const [groupsResult, botsResult] = await Promise.allSettled([
+        fetchGroups(userId),
+        fetchExistingBots(userId)
+      ]);
+      
+      // Log results
+      if (groupsResult.status === 'rejected') {
+        addDebug(`Failed to load groups: ${groupsResult.reason}`);
+        setError(`Failed to load groups: ${groupsResult.reason}`);
+      }
+      if (botsResult.status === 'rejected') {
+        addDebug(`Failed to load bots: ${botsResult.reason}`);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Step 1b: Load existing bots
@@ -205,8 +265,7 @@ export default function GroupMeSetup() {
       addDebug(`Processed groups: ${processedGroups.map(g => g.name).join(', ')}`);
       setGroups(processedGroups);
       
-      // Also fetch existing bots when groups are loaded
-      await fetchExistingBots(userId);
+      // Note: fetchExistingBots is now called concurrently in loadUserData()
     } catch (err) {
       const errorMsg = "Failed to load groups: " + err.message;
       addDebug(`Groups error: ${errorMsg}`);
