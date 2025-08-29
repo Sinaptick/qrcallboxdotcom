@@ -69,7 +69,7 @@ function Banner({ children }) {
 // -----------------------------
 // 🧾 Generate QR Codes
 // -----------------------------
-function GenerateQR({ userDoc, isAdmin }) {
+const GenerateQR = React.memo(function GenerateQR({ userDoc, isAdmin }) {
   const { auth } = useFirebase();
   const [store, setStore] = useState(userDoc?.storeNumber ? String(userDoc.storeNumber) : "");
 
@@ -278,7 +278,7 @@ function GenerateQR({ userDoc, isAdmin }) {
       </div>
     </div>
   );
-}
+});
 
 // -----------------------------
 // Auth Views
@@ -546,7 +546,7 @@ function RegisterForm({ onSwitch }) {
 // -----------------------------
 // App Shell w/ Tabs (single definition)
 // -----------------------------
-function Settings({ user }) {
+const Settings = React.memo(function Settings({ user }) {
   const { isDark, toggleTheme } = useTheme();
   const { db } = useFirebase();
   const [userDoc, setUserDoc] = useState(null);
@@ -804,9 +804,9 @@ function Settings({ user }) {
       </div>
     </div>
   );
-}
+});
 
-function Dashboard() {
+const Dashboard = React.memo(function Dashboard() {
   const { db } = useFirebase();
   const [stats, setStats] = useState({
     uniqueAreas: 0,
@@ -916,10 +916,10 @@ function Dashboard() {
       </div>
     </div>
   );
-}
+});
 
 // Top Responders component
-function TopResponders({ db }) {
+const TopResponders = React.memo(function TopResponders({ db }) {
   const [responders, setResponders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [timePeriod, setTimePeriod] = useState('weekly');
@@ -1094,7 +1094,7 @@ function TopResponders({ db }) {
       )}
     </div>
   );
-}
+});
 
 // Admin pending changes management
 function PendingChangesList({ db }) {
