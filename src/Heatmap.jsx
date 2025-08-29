@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { getFirestore, collection, getDocs } from "firebase/firestore";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -152,7 +152,7 @@ export default function Heatmap({
     });
 
     return init;
-  }, [filtered, hours, dayLabels]);
+  }, [filtered, hours.length, dayLabels.length]);
 
   const rowTotals = useMemo(
     () => matrix.map((row) => row.reduce((sum, c) => sum + c.total, 0)),
@@ -173,33 +173,33 @@ export default function Heatmap({
     [matrix]
   );
 
-  // dynamic blue with alpha by strength
-  function cellBg(total) {
+  // Memoize color calculation functions to prevent recreations
+  const cellBg = useCallback((total) => {
     const alpha = total === 0 ? 0 : Math.max(0.08, Math.min(1, total / globalMax));
     // Tailwind blue-500 rgb(59,130,246)
     return `rgba(59,130,246,${alpha})`;
-  }
+  }, [globalMax]);
 
-  // Color functions for totals
-  const maxRowTotal = Math.max(1, ...rowTotals);
-  const maxColumnTotal = Math.max(1, ...columnTotals);
-  const grandTotal = rowTotals.reduce((sum, total) => sum + total, 0);
+  // Memoize max values for totals
+  const maxRowTotal = useMemo(() => Math.max(1, ...rowTotals), [rowTotals]);
+  const maxColumnTotal = useMemo(() => Math.max(1, ...columnTotals), [columnTotals]);
+  const grandTotal = useMemo(() => rowTotals.reduce((sum, total) => sum + total, 0), [rowTotals]);
 
-  function rowTotalBg(total) {
+  const rowTotalBg = useCallback((total) => {
     const alpha = total === 0 ? 0.1 : Math.max(0.2, Math.min(1, total / maxRowTotal));
     return `rgba(59,130,246,${alpha})`;
-  }
+  }, [maxRowTotal]);
 
-  function columnTotalBg(total) {
+  const columnTotalBg = useCallback((total) => {
     const alpha = total === 0 ? 0.1 : Math.max(0.2, Math.min(1, total / maxColumnTotal));
     return `rgba(59,130,246,${alpha})`;
-  }
+  }, [maxColumnTotal]);
 
-  function grandTotalBg(total) {
+  const grandTotalBg = useCallback((total) => {
     const maxTotal = Math.max(maxRowTotal, maxColumnTotal);
     const alpha = total === 0 ? 0.1 : Math.max(0.3, Math.min(1, total / (maxTotal * 3))); // Scale for grand total
     return `rgba(59,130,246,${alpha})`;
-  }
+  }, [maxRowTotal, maxColumnTotal]);
 
   // format hour like "6:00 AM"
   function fmtHour(h) {
