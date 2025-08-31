@@ -1,22 +1,27 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect } from "react";
 import Button from "./Button.jsx";
 import { useFirebase } from "./hooks/useFirebase.js";
+import { useTicketReducer, ticketActions } from "./hooks/useTicketReducer.js";
 
 export default function TicketQueue() {
   const { auth } = useFirebase();
   const user = auth?.currentUser;
   
-  const [tickets, setTickets] = useState([]);
-  const [selectedTicket, setSelectedTicket] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [responding, setResponding] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const [reopening, setReopening] = useState(false);
-  const [updatingPriority, setUpdatingPriority] = useState(false);
-  const [statusFilter, setStatusFilter] = useState('open');
-  const [response, setResponse] = useState("");
-  const [lookupTicketId, setLookupTicketId] = useState("");
-  const [lookingUp, setLookingUp] = useState(false);
+  // Replace 10 useState hooks with single useReducer
+  const [state, dispatch] = useTicketReducer();
+  const {
+    tickets,
+    selectedTicket,
+    loading,
+    responding,
+    closing,
+    reopening,
+    updatingPriority,
+    statusFilter,
+    response,
+    lookupTicketId,
+    lookingUp
+  } = state;
 
   useEffect(() => {
     if (user) {
@@ -26,7 +31,7 @@ export default function TicketQueue() {
 
   const loadTickets = async () => {
     try {
-      setLoading(true);
+      dispatch(ticketActions.startLoading());
       const token = await user.getIdToken();
       const response = await fetch(`/api/tickets/list?status=${statusFilter}&limit=100`, {
         headers: {
@@ -39,11 +44,11 @@ export default function TicketQueue() {
       }
 
       const data = await response.json();
-      setTickets(data.tickets || []);
+      dispatch(ticketActions.setTickets(data.tickets || []));
     } catch (error) {
       console.error('Error loading tickets:', error);
     } finally {
-      setLoading(false);
+      dispatch(ticketActions.endLoading());
     }
   };
 
@@ -61,7 +66,7 @@ export default function TicketQueue() {
       }
 
       const data = await response.json();
-      setSelectedTicket(data.ticket);
+      dispatch(ticketActions.setSelectedTicket(data.ticket));
     } catch (error) {
       console.error('Error loading ticket details:', error);
     }
@@ -71,7 +76,7 @@ export default function TicketQueue() {
     if (!response.trim() || !selectedTicket) return;
 
     try {
-      setResponding(true);
+      dispatch(ticketActions.startRespond());
       const token = await user.getIdToken();
       const res = await fetch('/api/tickets/respond', {
         method: 'POST',
@@ -92,15 +97,14 @@ export default function TicketQueue() {
 
       // Reload tickets and clear response
       await loadTickets();
-      setResponse("");
+      dispatch(ticketActions.endRespond());
       
       // Reload ticket details to show the new response
       await loadTicketDetails(selectedTicket.id);
 
     } catch (error) {
       console.error('Error sending response:', error);
-    } finally {
-      setResponding(false);
+      dispatch(ticketActions.endRespond());
     }
   };
 
@@ -114,7 +118,7 @@ export default function TicketQueue() {
     console.log('Closing ticket:', selectedTicket.id);
 
     try {
-      setClosing(true);
+      dispatch(ticketActions.startClose());
       const token = await user.getIdToken();
       console.log('Making close request...');
       
@@ -147,20 +151,27 @@ export default function TicketQueue() {
       
       // If the current filter excludes closed tickets, immediately update the UI
       if (statusFilter === 'open' || statusFilter === 'in_progress') {
-        // Remove the closed ticket from the current list
+        // Remove the closed ticket from the current list and select next
         const updatedTickets = tickets.filter(t => t.id !== closedTicketId);
-        setTickets(updatedTickets);
+        const nextTicket = updatedTickets.length > 0 ? updatedTickets[0] : null;
         
-        // Select the next available ticket or clear selection
-        if (updatedTickets.length > 0) {
-          const nextTicket = updatedTickets[0];
-          setSelectedTicket(nextTicket);
+        // Use composite action to handle multiple state updates
+        dispatch(ticketActions.closeTicketSuccess({
+          ticketId: closedTicketId,
+          nextTicket: nextTicket,
+          shouldRemoveFromList: true
+        }));
+        
+        if (nextTicket) {
           await loadTicketDetails(nextTicket.id);
-        } else {
-          setSelectedTicket(null);
         }
       } else {
         // If showing all/closed tickets, refresh the current ticket to show updated status
+        dispatch(ticketActions.closeTicketSuccess({
+          ticketId: closedTicketId,
+          nextTicket: null,
+          shouldRemoveFromList: false
+        }));
         await loadTickets();
         await loadTicketDetails(closedTicketId);
       }
@@ -169,9 +180,7 @@ export default function TicketQueue() {
     } catch (error) {
       console.error('Error closing ticket:', error);
       alert('Error closing ticket: ' + error.message);
-    } finally {
-      console.log('Setting closing to false');
-      setClosing(false);
+      dispatch({ type: 'SET_CLOSING', payload: false });
     }
   };
 
@@ -185,7 +194,7 @@ export default function TicketQueue() {
     console.log('Reopening ticket:', selectedTicket.id);
 
     try {
-      setReopening(true);
+      dispatch({ type: 'SET_REOPENING', payload: true });
       const token = await user.getIdToken();
       console.log('Making reopen request...');
       
@@ -223,7 +232,7 @@ export default function TicketQueue() {
       alert('Error reopening ticket: ' + error.message);
     } finally {
       console.log('Setting reopening to false');
-      setReopening(false);
+      dispatch({ type: 'SET_REOPENING', payload: false });
     }
   };
 
@@ -233,7 +242,7 @@ export default function TicketQueue() {
     console.log('Updating priority to:', newPriority);
 
     try {
-      setUpdatingPriority(true);
+      dispatch({ type: 'SET_UPDATING_PRIORITY', payload: true });
       const token = await user.getIdToken();
       
       const res = await fetch('/api/tickets/update-priority', {
@@ -257,8 +266,8 @@ export default function TicketQueue() {
 
       console.log('Priority updated successfully');
       
-      // Update the local selected ticket
-      setSelectedTicket(prev => ({ ...prev, priority: newPriority }));
+      // Update the local selected ticket using composite action
+      dispatch(ticketActions.updateSelectedTicketPriority(newPriority));
       
       // Reload the ticket list to reflect the change
       await loadTickets();
@@ -266,8 +275,7 @@ export default function TicketQueue() {
     } catch (error) {
       console.error('Error updating priority:', error);
       alert('Error updating priority: ' + error.message);
-    } finally {
-      setUpdatingPriority(false);
+      dispatch({ type: 'SET_UPDATING_PRIORITY', payload: false });
     }
   };
 
@@ -275,7 +283,7 @@ export default function TicketQueue() {
     if (!lookupTicketId.trim()) return;
 
     try {
-      setLookingUp(true);
+      dispatch({ type: 'SET_LOOKING_UP', payload: true });
       const token = await user.getIdToken();
       const response = await fetch(`/api/tickets/lookup?ticketId=${encodeURIComponent(lookupTicketId.trim())}`, {
         headers: {
@@ -296,23 +304,20 @@ export default function TicketQueue() {
       
       // Add the found ticket to the list if not already present
       const foundTicket = data.ticket;
-      setTickets(prev => {
-        const exists = prev.find(t => t.id === foundTicket.id);
-        if (exists) {
-          return prev;
-        }
-        return [foundTicket, ...prev];
-      });
+      const updatedTickets = tickets.find(t => t.id === foundTicket.id)
+        ? tickets
+        : [foundTicket, ...tickets];
       
-      // Select and load the found ticket
-      setSelectedTicket(foundTicket);
-      setLookupTicketId('');
+      // Use composite action to handle multiple state updates
+      dispatch(ticketActions.lookupSuccess({
+        ticket: foundTicket,
+        updatedTickets
+      }));
 
     } catch (error) {
       console.error('Error looking up ticket:', error);
       alert('Error looking up ticket. Please try again.');
-    } finally {
-      setLookingUp(false);
+      dispatch({ type: 'SET_LOOKING_UP', payload: false });
     }
   };
 
@@ -346,7 +351,7 @@ export default function TicketQueue() {
         <div className="flex gap-3">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => dispatch(ticketActions.setStatusFilter(e.target.value))}
             className="rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
           >
             <option value="all">All Tickets</option>
@@ -369,7 +374,7 @@ export default function TicketQueue() {
           <input
             type="text"
             value={lookupTicketId}
-            onChange={(e) => setLookupTicketId(e.target.value)}
+            onChange={(e) => dispatch(ticketActions.setLookupTicketId(e.target.value))}
             placeholder="Enter ticket ID (e.g., TICKET-123456789-ABC123)"
             className="flex-1 rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             onKeyPress={(e) => e.key === 'Enter' && handleLookupTicket()}
@@ -537,7 +542,7 @@ export default function TicketQueue() {
                         </label>
                         <textarea
                           value={response}
-                          onChange={(e) => setResponse(e.target.value)}
+                          onChange={(e) => dispatch(ticketActions.setResponse(e.target.value))}
                           rows={4}
                           className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           placeholder="Type your response to the user..."

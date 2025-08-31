@@ -18,6 +18,7 @@ import { Card, CardHeader, CardBody } from "./components/shared/Card.jsx";
 import { Input } from "./components/shared/FormField.jsx";
 import { Tabs } from "./components/ui/Tabs.jsx";
 import FilterControls from "./components/dashboard/FilterControls.jsx";
+import TabContent from "./components/dashboard/TabContent.jsx";
 import { useInsightsData } from "./hooks/useInsightsData.js";
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
 import QRLockIcon from "./QRLockIcon.jsx";
@@ -2431,184 +2432,22 @@ function Shell({ user, onSignOut }) {
           </CardBody>
         </Card>
 
-        {active === "Setup" && (
-          <Card>
-            <CardHeader title="Store Implementation Setup" subtitle="Follow these steps to implement QRcallbox in your store" />
-            <CardBody>
-              <Setup onNavigate={(tab, subView) => {
-                setActive(tab);
-                if (tab === "Settings" && subView) {
-                  setCurrentSettingsView(subView);
-                }
-              }} />
-            </CardBody>
-          </Card>
-        )}
-
-        {active === "Dashboard" && (
-          <>
-            <Card>
-              <CardHeader title="Dashboard" subtitle="Overview of live assistance activity" />
-              <CardBody>
-                <Dashboard />
-              </CardBody>
-            </Card>
-            <Card>
-              <CardHeader title="Top Responders" subtitle="Leaderboard of fastest and most active associates" />
-              <CardBody>
-                <TopResponders db={db} />
-              </CardBody>
-            </Card>
-          </>
-        )}
-
-        {active === "Insights" && (
-          <Card>
-            {/* Replace old subtitle with InsightsAI below */}
-            <CardHeader title="Insights" subtitle={null} />
-            <CardBody>
-              <FilterControls
-                {...insightsData}
-                isAdmin={isAdmin}
-                userDoc={userDoc}
-              />
-
-              {/* --- Ask Insights AI (replaces old "Analytics and trends" text) --- */}
-              <InsightsAI
-                logs={filteredLogs}
-              />
-
-              {/* Heatmap below (tooltips: add title attr inside Heatmap tiles if not already) */}
-              <div className="mt-6">
-              {logsLoading ? (
-                <div className="flex items-center justify-center py-12 text-muted">Loading data…</div>
-              ) : (
-                <Heatmap
-                  logs={filteredLogs}
-                  selectedStores={selectedStores}
-                  selectedWeek={selectedWeek}
-                  weeks={weeks}
-                  selectedAreas={selectedAreas}
-                />
-              )}
-              </div>
-            </CardBody>
-          </Card>
-        )}
-
-        {active === "Generate QR" && (
-          <Card>
-            <CardHeader title="Generate QR" subtitle="Create a new QR poster" />
-            <CardBody>
-              <GenerateQR userDoc={userDoc} isAdmin={isAdmin} />
-            </CardBody>
-          </Card>
-        )}
-
-        {active === "Settings" && (
-          <Card>
-            <CardHeader title="Settings" subtitle="Manage your account and support tickets" />
-            <CardBody>
-              {/* Settings Navigation */}
-              <div className="mb-6">
-                <div className="flex gap-2 border-b border-themed">
-                  {["Account", "My Tickets", "Integrations"].map((view) => (
-                    <button
-                      key={view}
-                      onClick={() => setCurrentSettingsView(view.toLowerCase().replace(" ", "_"))}
-                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
-                        currentSettingsView === view.toLowerCase().replace(" ", "_")
-                          ? "border-indigo-500 text-primary"
-                          : "border-transparent text-secondary hover:text-primary"
-                      }`}
-                    >
-                      {view}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Settings Content */}
-              {currentSettingsView === "account" && (
-                <Settings user={user} />
-              )}
-
-              {currentSettingsView === "my_tickets" && (
-                <MyTickets onCreateTicket={() => setShowContactUs(true)} />
-              )}
-
-              {currentSettingsView === "integrations" && (
-                <div className="space-y-8">
-                  {/* GroupMe setup */}
-                  <GroupMeSetup />
-
-                  {/* Workvivo setup - temporarily disabled */}
-                  {/* <WorkvivoSetup /> */}
-                </div>
-              )}
-            </CardBody>
-          </Card>
-        )}
-
-        {active === "Admin" && isAdmin && (
-          <Card>
-            <CardHeader title="Admin" subtitle="Admin tools and controls" />
-            <CardBody>
-              <div className="text-sm text-secondary mb-4">
-                Welcome, admin user <span className="font-mono">sinaptick@gmail.com</span>.
-              </div>
-              
-              {/* Admin Navigation */}
-              <div className="mb-6">
-                <div className="flex gap-2 border-b border-themed">
-                  {["Overview", "Support Tickets", "User Management", "Spam Protection", "Data Cleanup"].map((view) => (
-                    <button
-                      key={view}
-                      onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
-                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
-                        currentAdminView === view.toLowerCase().replace(" ", "_")
-                          ? "border-indigo-500 text-primary"
-                          : "border-transparent text-secondary hover:text-primary"
-                      }`}
-                    >
-                      {view}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Admin Content */}
-              {currentAdminView === "overview" && (
-                <div className="space-y-6">
-                  <div className="text-sm text-secondary mb-4">
-                    Quick overview of system status and recent activity.
-                  </div>
-                  <UnapprovedUsersList db={db} />
-                  <PendingChangesList db={db} />
-                </div>
-              )}
-
-              {currentAdminView === "support_tickets" && (
-                <TicketQueue />
-              )}
-
-              {currentAdminView === "user_management" && (
-                <div className="space-y-6">
-                  <UserManagement db={db} />
-                  <UnapprovedUsersList db={db} />
-                </div>
-              )}
-
-              {currentAdminView === "spam_protection" && (
-                <BlockedIPsManager />
-              )}
-              
-              {currentAdminView === "data_cleanup" && (
-                <DataCleanupTool db={db} />
-              )}
-            </CardBody>
-          </Card>
-        )}
+        <TabContent
+          active={active}
+          user={user}
+          isAdmin={isAdmin}
+          userDoc={userDoc}
+          db={db}
+          showContactUs={showContactUs}
+          setShowContactUs={setShowContactUs}
+          currentSettingsView={currentSettingsView}
+          setCurrentSettingsView={setCurrentSettingsView}
+          currentAdminView={currentAdminView}
+          setCurrentAdminView={setCurrentAdminView}
+          insightsData={insightsData}
+          filteredLogs={filteredLogs}
+          setActive={setActive}
+        />
       </main>
       
       {/* Contact Us Link - Always visible at bottom */}
