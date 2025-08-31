@@ -249,18 +249,40 @@ const cellBg = useCallback((total) => {
 ## ⚡ PHASE 2: Structural Improvements (Week 2)
 
 ### Shell Component Refactoring (app.jsx)
-**Status: 🔴 NOT STARTED**
+**Status: ⚡ PARTIALLY COMPLETED**
 
 #### 2.1 Split Monster Component (6 hours)
 - [ ] Extract `AppShell` (header, navigation)
-- [ ] Extract `FilterControls` (store/area/week selection)
+- [x] Extract `FilterControls` (store/area/week selection) ✅ **COMPLETED**
 - [ ] Extract `TabContent` (route-specific content)
 - [ ] Extract `AdminPanel` (admin-specific functionality)
 
 #### 2.2 Create Custom Hooks (4 hours)
+- [x] `useInsightsData` hook for insights data management ✅ **COMPLETED**
 - [ ] `useUserPermissions` hook
-- [ ] `useFilteredData` hook for logs processing
 - [ ] `useUserData` hook for user loading
+
+#### 2.3 ✅ COMPLETED: FilterControls & useInsightsData Integration
+
+**What was accomplished:**
+- Created `FilterControls` component (177 lines) extracted from Shell
+- Created `useInsightsData` custom hook (257 lines) for complex data management
+- Integrated hook into Shell component, removing duplicate logic
+- Removed old useEffect block (87 lines) for insights data loading
+- Removed old useMemo calculations for filteredAreas/filteredWeeks (54 lines)
+- Simplified FilterControls usage from 20+ individual props to spread operator
+
+**Performance Impact:**
+- **app.jsx reduced**: 2,977 → 2,763 lines (-214 lines, -7.2%)
+- **Eliminated duplicate logic**: Removed ~150 lines of filtering calculations
+- **Improved maintainability**: Insights logic now centralized in reusable hook
+- **Better separation of concerns**: UI logic separated from data management
+
+**Technical improvements:**
+- FilterControls component is now React.memo wrapped for performance
+- useInsightsData hook provides memoized calculations
+- Reduced component complexity and improved testability
+- Hook can be reused in other components needing insights data
 
 ### GroupMeSetup Component Split
 **Status: 🔴 NOT STARTED**
@@ -333,11 +355,12 @@ const cellBg = useCallback((total) => {
 - [x] Concurrent API Calls ✅ (Completed - 60% faster loading)
 - [x] Heatmap Matrix Optimization ✅ (Completed - 40% faster rendering)
 
-### Week 2 Targets:
-- [ ] Shell Component Split
-- [ ] GroupMe Component Split
+### Week 2 Targets: ⚡ IN PROGRESS
+- [x] Shell Component Split - FilterControls extracted ✅ 
+- [x] Custom Hooks Creation - useInsightsData hook ✅
+- [x] Insights Data Integration - Old useEffect removed, hook integrated ✅
+- [ ] GroupMe Component Split 
 - [ ] TicketQueue useReducer
-- [ ] Custom Hooks Creation
 
 ### Week 3 Targets:
 - [ ] Advanced Memoization

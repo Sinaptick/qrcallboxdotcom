@@ -2356,187 +2356,12 @@ function Shell({ user, onSignOut }) {
   // Insights data using custom hook
   const insightsData = useInsightsData(active, db);
 
-  // Load logs + build options
-  useEffect(() => {
-    if (active !== "Insights") return;
-    let mounted = true;
-    setLogsLoading(true);
-    (async () => {
-      try {
-        console.log("Loading logs for insights...");
-        const { getDocs, collection } = await import("firebase/firestore");
-        const logsSnap = await getDocs(collection(db, "logs"));
-        console.log("Logs query returned:", logsSnap.docs.length, "documents");
-        const logsArr = [];
-        const storeSet = new Set();
-        const weekMap = new Map();
-        const areaSet = new Set();
-        const week0 = new Date(2025, 1, 1);
 
-        logsSnap.forEach((d) => {
-          const data = d.data();
-          logsArr.push(data);
-          if (data?.store) storeSet.add(String(data.store));
-          if (data?.area) areaSet.add(data.area);
 
-          let ts = data?.ts;
-          let dateObj = null;
-          try {
-            if (ts && typeof ts.toDate === "function") dateObj = ts.toDate();
-            else if (ts && ts.seconds) dateObj = new Date(ts.seconds * 1000);
-            else if (typeof ts === "string" || typeof ts === "number") dateObj = new Date(ts);
-
-            if (dateObj && !isNaN(dateObj)) {
-              const diffDays = Math.floor((dateObj - week0) / (1000 * 60 * 60 * 24));
-              if (diffDays >= 0) {
-                const weekNum = Math.floor(diffDays / 7) + 1;
-                const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
-                const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
-                const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined, {
-                  month: "short",
-                  day: "numeric",
-                })}–${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
-                weekMap.set(weekNum, label);
-              }
-            }
-          } catch {}
-        });
-
-        if (mounted) {
-          setLogs(logsArr);
-          
-          // For non-admins, show all their accessible stores
-          const userAccessibleStores = isAdmin 
-            ? Array.from(storeSet)
-            : (userDoc?.allowedStores || (userDoc?.storeNumber ? [userDoc.storeNumber] : [])).filter(store => storeSet.has(String(store)));
-          
-          const sortedStores = userAccessibleStores.sort();
-          
-          setStores(sortedStores);
-          
-          // Auto-select user's stores if they exist in the available stores and no stores are currently selected
-          if (selectedStores.length === 0 && sortedStores.length > 0) {
-            if (userDoc?.allowedStores) {
-              // Select all user's accessible stores that have data
-              const userStoresWithData = userDoc.allowedStores.filter(store => sortedStores.includes(String(store)));
-              if (userStoresWithData.length > 0) {
-                setSelectedStores(userStoresWithData.map(String));
-              }
-            } else if (userDoc?.storeNumber && sortedStores.includes(userDoc.storeNumber)) {
-              setSelectedStores([userDoc.storeNumber]);
-            } else {
-              setSelectedStores([sortedStores[0]]); // Fallback to first store
-            }
-          }
-          
-          setWeeks(
-            Array.from(weekMap.values()).sort((a, b) => {
-              const wa = parseInt(a.match(/Week (\d+)/)?.[1] || "0", 10);
-              const wb = parseInt(b.match(/Week (\d+)/)?.[1] || "0", 10);
-              return wa - wb;
-            })
-          );
-          setAreas(Array.from(areaSet).sort());
-        }
-      } finally {
-        if (mounted) setLogsLoading(false);
-      }
-    })();
-    return () => { mounted = false; };
-  }, [active, db]);
-
-  // Derived filtered options
-  const filteredAreas = useMemo(() => {
-    if (!selectedStores.length && !selectedWeek.length) return areas;
-    let filtered = logs;
-    if (selectedStores.length) filtered = filtered.filter(l => selectedStores.includes(String(l.store)));
-    if (selectedWeek.length) {
-      const week0 = new Date(2025, 1, 1);
-      filtered = filtered.filter(l => {
-        let ts = l.ts;
-        let d = null;
-        if (ts?.toDate) d = ts.toDate();
-        else if (ts?.seconds) d = new Date(ts.seconds * 1000);
-        else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
-        if (!d || isNaN(d)) return false;
-        const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
-        if (diffDays < 0) return false;
-        const weekNum = Math.floor(diffDays / 7) + 1;
-        const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
-        const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
-        const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined,{month:"short",day:"numeric"})}–${weekEnd.toLocaleDateString(undefined,{month:"short",day:"numeric"})})`;
-        return selectedWeek.includes(label);
-      });
-    }
-    return Array.from(new Set(filtered.map(l => l.area))).sort();
-  }, [areas, logs, selectedStores, selectedWeek]);
-
-  const filteredWeeks = useMemo(() => {
-    if (!selectedStores.length && !selectedAreas.length) return weeks;
-    let filtered = logs;
-    if (selectedStores.length) filtered = filtered.filter(l => selectedStores.includes(String(l.store)));
-    if (selectedAreas.length) filtered = filtered.filter(l => selectedAreas.includes(l.area));
-
-    const week0 = new Date(2025, 1, 1);
-    const weekMap = new Map();
-    filtered.forEach(l => {
-      let ts = l.ts;
-      let d = null;
-      if (ts?.toDate) d = ts.toDate();
-      else if (ts?.seconds) d = new Date(ts.seconds * 1000);
-      else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
-      if (!d || isNaN(d)) return;
-      const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
-      if (diffDays < 0) return;
-      const weekNum = Math.floor(diffDays / 7) + 1;
-      const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
-      const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
-      const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined,{month:"short",day:"numeric"})}–${weekEnd.toLocaleDateString(undefined,{month:"short",day:"numeric"})})`;
-      weekMap.set(weekNum, label);
-    });
-    return Array.from(weekMap.values()).sort((a, b) => {
-      const wa = parseInt(a.match(/Week (\d+)/)?.[1] || "0", 10);
-      const wb = parseInt(b.match(/Week (\d+)/)?.[1] || "0", 10);
-      return wa - wb;
-    });
-  }, [weeks, logs, selectedStores, selectedAreas]);
-
-  // Keep selections valid when options shrink
-  useEffect(() => {
-    setSelectedAreas(prev => prev.filter(a => filteredAreas.includes(a)));
-  }, [filteredAreas]);
-  useEffect(() => {
-    setSelectedWeek(prev => prev.filter(w => filteredWeeks.includes(w)));
-  }, [filteredWeeks]);
-
-  // Auto-select first store
-  useEffect(() => {
-    if (stores.length > 0) {
-      setSelectedStores(prev => {
-        if (!prev.length || prev.some(s => !stores.includes(s))) return [stores[0]];
-        return prev;
-      });
-    }
-  }, [stores]);
-
-  // Build filtered logs for InsightsAI
+  // Build filtered logs for InsightsAI (apply additional user permissions on top of hook data)
   const filteredLogs = useMemo(() => {
-    if (!logs?.length) return [];
-    const week0 = new Date(2025, 1, 1);
-    const labelForTs = (ts) => {
-      let d = null;
-      if (ts?.toDate) d = ts.toDate();
-      else if (ts?.seconds) d = new Date(ts.seconds * 1000);
-      else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
-      if (!d || isNaN(d)) return null;
-      const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
-      if (diffDays < 0) return null;
-      const weekNum = Math.floor(diffDays / 7) + 1;
-      const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
-      const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
-      return `Week ${weekNum} (${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
-    };
-    return logs.filter((l) => {
+    if (!insightsData.filteredLogs?.length) return [];
+    return insightsData.filteredLogs.filter((l) => {
       // Non-admin users can only see data from their accessible stores
       if (!isAdmin && userDoc) {
         const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
@@ -2544,16 +2369,9 @@ function Shell({ user, onSignOut }) {
           return false;
         }
       }
-      
-      if (selectedStores.length && !selectedStores.includes(String(l.store))) return false;
-      if (selectedAreas.length && !selectedAreas.includes(l.area)) return false;
-      if (selectedWeek.length) {
-        const label = labelForTs(l.ts);
-        if (!label || !selectedWeek.includes(label)) return false;
-      }
       return true;
     });
-  }, [logs, selectedStores, selectedAreas, selectedWeek, isAdmin, userDoc?.storeNumber, userDoc?.allowedStores]);
+  }, [insightsData.filteredLogs, isAdmin, userDoc?.storeNumber, userDoc?.allowedStores]);
 
   // Gate for unapproved users
   if (userDoc && userDoc.approved === false && !isAdmin) {
@@ -2571,17 +2389,6 @@ function Shell({ user, onSignOut }) {
     );
   }
 
-  // Select-All helpers (must be AFTER filtered memos)
-  const allAreasVisible = filteredAreas;
-  const allWeeksVisible = filteredWeeks;
-  const allAreasChecked = allAreasVisible.length > 0 && selectedAreas.length === allAreasVisible.length;
-  const allWeeksChecked = allWeeksVisible.length > 0 && selectedWeek.length === allWeeksVisible.length;
-  const toggleAllAreas = () => {
-    setSelectedAreas(prev => prev.length === allAreasVisible.length ? [] : [...allAreasVisible]);
-  };
-  const toggleAllWeeks = () => {
-    setSelectedWeek(prev => prev.length === allWeeksVisible.length ? [] : [...allWeeksVisible]);
-  };
 
   return (
     <div className="min-h-screen bg-primary">
@@ -2661,28 +2468,7 @@ function Shell({ user, onSignOut }) {
             <CardHeader title="Insights" subtitle={null} />
             <CardBody>
               <FilterControls
-                stores={stores}
-                selectedStores={selectedStores}
-                setSelectedStores={setSelectedStores}
-                showStores={showStores}
-                setShowStores={setShowStores}
-                
-                filteredAreas={filteredAreas}
-                selectedAreas={selectedAreas}
-                setSelectedAreas={setSelectedAreas}
-                showAreas={showAreas}
-                setShowAreas={setShowAreas}
-                allAreasChecked={allAreasChecked}
-                toggleAllAreas={toggleAllAreas}
-                
-                filteredWeeks={filteredWeeks}
-                selectedWeek={selectedWeek}
-                setSelectedWeek={setSelectedWeek}
-                showWeeks={showWeeks}
-                setShowWeeks={setShowWeeks}
-                allWeeksChecked={allWeeksChecked}
-                toggleAllWeeks={toggleAllWeeks}
-                
+                {...insightsData}
                 isAdmin={isAdmin}
                 userDoc={userDoc}
               />
