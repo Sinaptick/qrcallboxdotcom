@@ -809,7 +809,8 @@ const Settings = React.memo(function Settings({ user }) {
   );
 });
 
-const Dashboard = React.memo(function Dashboard() {
+const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
+  console.log("Dashboard: Component called with props:", { userDoc, isAdmin });
   const { db } = useFirebase();
   const [stats, setStats] = useState({
     uniqueAreas: 0,
@@ -819,10 +820,17 @@ const Dashboard = React.memo(function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Don't run if we're waiting for userDoc to load (unless admin)
+    if (!isAdmin && !userDoc) {
+      console.log("Dashboard: Waiting for userDoc to load");
+      return;
+    }
+    
     let mounted = true;
     
     async function fetchDashboardStats() {
       try {
+        console.log("Dashboard: fetchDashboardStats called", { userDoc, isAdmin });
         const { getDocs, collection, query, where, Timestamp } = await import("firebase/firestore");
         
         // Get start and end of today
@@ -842,7 +850,21 @@ const Dashboard = React.memo(function Dashboard() {
         );
         
         const querySnapshot = await getDocs(q);
-        const todayLogs = querySnapshot.docs.map(doc => doc.data());
+        let todayLogs = querySnapshot.docs.map(doc => doc.data());
+        
+        // Filter logs by user's accessible stores (same logic as insights)
+        console.log("Dashboard: Before filtering - total logs:", todayLogs.length);
+        if (!isAdmin && userDoc) {
+          const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
+          console.log("Dashboard: User accessible stores:", accessibleStores);
+          console.log("Dashboard: Sample log stores:", todayLogs.slice(0, 3).map(log => log.store));
+          todayLogs = todayLogs.filter(log => 
+            accessibleStores.some(store => String(log.store) === String(store))
+          );
+          console.log("Dashboard: After filtering - remaining logs:", todayLogs.length);
+        } else {
+          console.log("Dashboard: Admin user or no userDoc - showing all logs");
+        }
         
         if (!mounted) return;
         
@@ -892,7 +914,7 @@ const Dashboard = React.memo(function Dashboard() {
 
     fetchDashboardStats();
     return () => { mounted = false; };
-  }, [db]);
+  }, [db, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
 
   return (
     <div className="grid md:grid-cols-3 gap-4">
@@ -2355,7 +2377,7 @@ function Shell({ user, onSignOut }) {
   }, [user, db]);
 
   // Insights data using custom hook
-  const insightsData = useInsightsData(active, db);
+  const insightsData = useInsightsData(active, db, userDoc);
 
 
 
@@ -2573,6 +2595,9 @@ function AppInner() {
     </>
   );
 }
+
+// Export components for use in other files
+export { Dashboard, TopResponders, GenerateQR, Settings };
 
 export default function App() {
   return (

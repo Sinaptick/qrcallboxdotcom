@@ -76,7 +76,7 @@ const FilterControls = React.memo(function FilterControls({
       <div className="flex-1">
         <label className="block text-sm font-medium text-primary mb-1">Store</label>
         <div className="rounded border border-themed px-2 py-1 text-left w-full bg-tertiary text-primary">
-          {userDoc?.storeNumber || "Not set"}
+          {userDoc?.storeNumber || (userDoc?.allowedStores && userDoc.allowedStores.length === 1 ? userDoc.allowedStores[0] : "Not set")}
         </div>
       </div>
     )}

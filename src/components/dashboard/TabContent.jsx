@@ -1,9 +1,6 @@
 import React from "react";
 import { Card, CardHeader, CardBody } from "../shared/Card.jsx";
-import Dashboard from "../../app.jsx"; // Will need to verify these imports
-import TopResponders from "../../app.jsx";
-import GenerateQR from "../../app.jsx";
-import Settings from "../../app.jsx";
+import { Dashboard, TopResponders, GenerateQR, Settings } from "../../app.jsx";
 import FilterControls from "./FilterControls.jsx";
 import InsightsAI from "../../InsightsAI.jsx";
 import Heatmap from "../../Heatmap.jsx";
@@ -43,12 +40,13 @@ const TabContent = React.memo(function TabContent({
 
   // Dashboard Tab
   if (active === "Dashboard") {
+    console.log("TabContent: Rendering Dashboard with props:", { userDoc, isAdmin });
     return (
       <>
         <Card>
           <CardHeader title="Dashboard" subtitle="Overview of live assistance activity" />
           <CardBody>
-            <Dashboard />
+            <Dashboard userDoc={userDoc} isAdmin={isAdmin} />
           </CardBody>
         </Card>
         <Card>
