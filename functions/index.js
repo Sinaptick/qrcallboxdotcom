@@ -8,10 +8,11 @@ import { defineSecret } from "firebase-functions/params";
 
 // Import webhook handler and automation functions
 export { groupmeWebhook } from './groupme-webhook.js';
-export { workvivoConnect, workvivoConfig, workvivoDisconnect, workvivoCheckCompletion } from './workvivo-automation.js';
-export { workvivoMonitor } from './workvivo-monitor.js';
+// Workvivo functions temporarily disabled
+// export { workvivoConnect, workvivoConfig, workvivoDisconnect, workvivoCheckCompletion } from './workvivo-automation.js';
+// export { workvivoMonitor } from './workvivo-monitor.js';
 export { submitTicket, getTickets, getMyTickets, getTicketDetails, respondToTicket, handleEmailReply, lookupTicket, updateTicketPriority } from './tickets.js';
-import { postToWorkvivo } from './workvivo-automation.js';
+// import { postToWorkvivo } from './workvivo-automation.js';
 
 // ===== Secrets (set with `firebase functions:secrets:set ...`) =====
 const GROUPME_CLIENT_ID = defineSecret("GROUPME_CLIENT_ID");
@@ -2289,19 +2290,19 @@ async function sendWorkvivoNotification(store, area) {
       
       try {
         logger.info("Attempting to send to Store 1458 Workvivo bot", { 
-          url: "http://34.45.52.250:5002/send",
+          url: "http://34.45.52.250:5002/webhook",
           message,
           store,
           area
         });
         
-        const response = await fetch("http://34.45.52.250:5002/send", {
+        const response = await fetch("http://34.45.52.250:5002/webhook", {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
             "User-Agent": "QRCallBox-Firebase-Function"
           },
-          body: JSON.stringify({ message })
+          body: JSON.stringify({ text: message })
         });
         
         const responseText = await response.text();
