@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
  * Custom hook for managing insights data loading and filtering
  * Extracted from Shell component to reduce complexity and improve reusability
  */
-export function useInsightsData(active, db) {
+export function useInsightsData(active, db, user = null) {
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
   
@@ -84,6 +84,39 @@ export function useInsightsData(active, db) {
           
           const areaOptions = Array.from(areaSet).filter(Boolean).sort();
           setAreas(areaOptions);
+          
+          // Set defaults only if nothing is selected yet
+          setSelectedStores(prev => {
+            if (prev.length > 0) return prev; // Don't override existing selection
+            
+            // Default to user's home store or current store
+            let defaultStore = null;
+            if (user?.homeStore) {
+              defaultStore = String(user.homeStore);
+            } else if (user?.storeNumber) {
+              defaultStore = String(user.storeNumber);
+            }
+            
+            // Check if default store exists in available options
+            if (defaultStore && storeOptions.includes(defaultStore)) {
+              return [defaultStore];
+            }
+            
+            // Fallback to empty selection
+            return [];
+          });
+          
+          // Default to current week (most recent week)
+          setSelectedWeek(prev => {
+            if (prev.length > 0) return prev; // Don't override existing selection
+            return weekOptions.length > 0 ? [weekOptions[0]] : [];
+          });
+          
+          // Default to all areas
+          setSelectedAreas(prev => {
+            if (prev.length > 0) return prev; // Don't override existing selection
+            return areaOptions;
+          });
         }
       } catch (err) {
         console.error("Error loading insights data:", err);
@@ -101,14 +134,21 @@ export function useInsightsData(active, db) {
     })();
     
     return () => { mounted = false; };
-  }, [active, db]);
+  }, [active, db, user?.homeStore, user?.storeNumber]);
 
   // Filtered data based on selections
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
-      // Store filter
-      if (selectedStores.length > 0 && !selectedStores.includes(String(log.store))) {
-        return false;
+      // Store filter (normalize for comparison to handle leading zeros)
+      if (selectedStores.length > 0) {
+        if (!log.store) return false;
+        const normalizedLogStore = String(log.store).replace(/^0+/, '') || '0';
+        const normalizedSelectedStores = selectedStores.map(store => {
+          return String(store).replace(/^0+/, '') || '0';
+        });
+        if (!normalizedSelectedStores.includes(normalizedLogStore)) {
+          return false;
+        }
       }
       
       // Area filter
@@ -155,7 +195,14 @@ export function useInsightsData(active, db) {
   const filteredAreas = useMemo(() => {
     if (selectedStores.length === 0) return areas;
     
-    const relevantLogs = logs.filter(log => selectedStores.includes(String(log.store)));
+    const relevantLogs = logs.filter(log => {
+      if (!log.store) return false;
+      const normalizedLogStore = String(log.store).replace(/^0+/, '') || '0';
+      const normalizedSelectedStores = selectedStores.map(store => {
+        return String(store).replace(/^0+/, '') || '0';
+      });
+      return normalizedSelectedStores.includes(normalizedLogStore);
+    });
     const relevantAreas = new Set(relevantLogs.map(log => log.area).filter(Boolean));
     return areas.filter(area => relevantAreas.has(area));
   }, [areas, logs, selectedStores]);
@@ -164,7 +211,15 @@ export function useInsightsData(active, db) {
     if (selectedStores.length === 0 && selectedAreas.length === 0) return weeks;
     
     const relevantLogs = logs.filter(log => {
-      if (selectedStores.length > 0 && !selectedStores.includes(String(log.store))) return false;
+      // Store filter with normalization
+      if (selectedStores.length > 0) {
+        if (!log.store) return false;
+        const normalizedLogStore = String(log.store).replace(/^0+/, '') || '0';
+        const normalizedSelectedStores = selectedStores.map(store => {
+          return String(store).replace(/^0+/, '') || '0';
+        });
+        if (!normalizedSelectedStores.includes(normalizedLogStore)) return false;
+      }
       if (selectedAreas.length > 0 && !selectedAreas.includes(log.area)) return false;
       return true;
     });

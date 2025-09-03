@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "QRCall Workvivo Bot",
+  "version": "1.0",
+  "description": "Auto-posts QR notifications to Workvivo",
+  
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  
+  "host_permissions": [
+    "https://walmart.workvivo.com/*",
+    "http://34.45.52.250:5002/*"
+  ],
+  
+  "content_scripts": [
+    {
+      "matches": ["https://walmart.workvivo.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  
+  "background": {
+    "service_worker": "background.js"
+  }
+}

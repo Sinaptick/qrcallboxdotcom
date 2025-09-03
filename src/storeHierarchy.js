@@ -114,13 +114,24 @@ export function getStoresForMarket(marketNumber) {
   return stores;
 }
 
+function normalizeStore(store) {
+  if (store === null || store === undefined || store === '') {
+    return '';
+  }
+  const storeStr = String(store);
+  return storeStr.replace(/^0+/, '') || '0';
+}
+
 export function getAllStoresForSelection(selectionType, selectionValue) {
   const stores = [];
   
   switch (selectionType) {
     case 'store':
-      // Direct store selection
-      stores.push(parseInt(selectionValue));
+      // Direct store selection - normalize to remove leading zeros
+      const normalizedStore = parseInt(normalizeStore(selectionValue));
+      if (!isNaN(normalizedStore)) {
+        stores.push(normalizedStore);
+      }
       break;
       
     case 'market':

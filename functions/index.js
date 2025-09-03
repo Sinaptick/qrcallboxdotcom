@@ -12,6 +12,7 @@ export { groupmeWebhook } from './groupme-webhook.js';
 // export { workvivoConnect, workvivoConfig, workvivoDisconnect, workvivoCheckCompletion } from './workvivo-automation.js';
 // export { workvivoMonitor } from './workvivo-monitor.js';
 export { submitTicket, getTickets, getMyTickets, getTicketDetails, respondToTicket, handleEmailReply, lookupTicket, updateTicketPriority } from './tickets.js';
+export { monitorStoresWithoutBots, monitorBotDeletions, checkBotsManually } from './bot-monitor.js';
 // import { postToWorkvivo } from './workvivo-automation.js';
 
 // ===== Secrets (set with `firebase functions:secrets:set ...`) =====

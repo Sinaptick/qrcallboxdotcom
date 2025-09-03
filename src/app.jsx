@@ -858,9 +858,18 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
           const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
           console.log("Dashboard: User accessible stores:", accessibleStores);
           console.log("Dashboard: Sample log stores:", todayLogs.slice(0, 3).map(log => log.store));
-          todayLogs = todayLogs.filter(log => 
-            accessibleStores.some(store => String(log.store) === String(store))
-          );
+          
+          // Normalize stores for comparison (handle leading zeros)
+          const normalizedAccessible = accessibleStores.map(store => {
+            const storeStr = String(store);
+            return storeStr.replace(/^0+/, '') || '0';
+          });
+          
+          todayLogs = todayLogs.filter(log => {
+            if (!log.store) return false;
+            const normalizedLogStore = String(log.store).replace(/^0+/, '') || '0';
+            return normalizedAccessible.includes(normalizedLogStore);
+          });
           console.log("Dashboard: After filtering - remaining logs:", todayLogs.length);
         } else {
           console.log("Dashboard: Admin user or no userDoc - showing all logs");
@@ -2388,7 +2397,17 @@ function Shell({ user, onSignOut }) {
       // Non-admin users can only see data from their accessible stores
       if (!isAdmin && userDoc) {
         const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
-        if (!accessibleStores.some(store => String(l.store) === String(store))) {
+        
+        // Normalize stores for comparison (handle leading zeros)
+        const normalizedAccessible = accessibleStores.map(store => {
+          const storeStr = String(store);
+          return storeStr.replace(/^0+/, '') || '0';
+        });
+        
+        if (!l.store) return false;
+        const normalizedLogStore = String(l.store).replace(/^0+/, '') || '0';
+        
+        if (!normalizedAccessible.includes(normalizedLogStore)) {
           return false;
         }
       }
