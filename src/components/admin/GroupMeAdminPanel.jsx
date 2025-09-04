@@ -4,19 +4,18 @@ import Button from "../../Button.jsx";
 
 /**
  * GroupMeAdminPanel Component
- * Admin-specific GroupMe bot management for helping other users
- * Does not load admin's own GroupMe data, focuses on tools for managing other users' bots
+ * Admin-specific GroupMe bot management by store number
+ * Lookup store and show all users with their GroupMe bot status
  */
 const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
   const { auth } = useFirebase();
   const user = auth?.currentUser;
   
-  const [targetUserId, setTargetUserId] = useState("");
-  const [groupmeUserId, setGroupmeUserId] = useState("");
+  const [storeNumber, setStoreNumber] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [debugInfo, setDebugInfo] = useState([]);
-  const [botData, setBotData] = useState(null);
+  const [storeUsers, setStoreUsers] = useState([]);
 
   // Debug logging function
   const addDebug = useCallback((message) => {
@@ -36,27 +35,28 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
     addDebug(`ERROR: ${errorMessage}`);
   }, [addDebug]);
 
-  // Look up user's GroupMe connection
-  const lookupUser = useCallback(async () => {
-    if (!targetUserId.trim()) {
-      handleError("Please enter a user email or ID");
+  // Look up store users
+  const lookupStore = useCallback(async () => {
+    if (!storeNumber.trim()) {
+      handleError("Please enter a store number");
       return;
     }
 
     try {
       setLoading(true);
       setError("");
-      addDebug(`Looking up user: ${targetUserId}`);
+      setStoreUsers([]);
+      addDebug(`Looking up store: ${storeNumber}`);
       
       const token = await user.getIdToken();
-      const res = await fetch(`/api/admin/groupme/lookup-user`, {
+      const res = await fetch(`/api/admin/groupme/lookup-store`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          user_identifier: targetUserId.trim()
+          store_number: parseInt(storeNumber.trim())
         })
       });
 
@@ -67,32 +67,35 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
 
       const data = await res.json();
       
-      if (data.groupme_user_id) {
-        setGroupmeUserId(data.groupme_user_id);
-        addDebug(`Found GroupMe user ID: ${data.groupme_user_id}`);
+      if (data.users && data.users.length > 0) {
+        setStoreUsers(data.users);
+        addDebug(`Found ${data.users.length} users for store ${storeNumber}`);
         
-        // Auto-load bot data
-        await loadUserBots(data.groupme_user_id);
+        // Load GroupMe data for each user
+        for (const user of data.users) {
+          if (user.groupme_user_id) {
+            await loadUserBots(user.id, user.groupme_user_id);
+          }
+        }
       } else {
-        addDebug("User has no GroupMe connection");
-        setGroupmeUserId("");
-        setBotData(null);
+        addDebug(`No users found for store ${storeNumber}`);
+        setStoreUsers([]);
       }
       
     } catch (err) {
-      handleError(`Lookup failed: ${err.message}`);
+      handleError(`Store lookup failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
-  }, [targetUserId, user, addDebug, handleError]);
+  }, [storeNumber, user, addDebug, handleError]);
 
   // Load user's GroupMe bots
-  const loadUserBots = useCallback(async (userId) => {
+  const loadUserBots = useCallback(async (userId, groupmeUserId) => {
     try {
-      addDebug(`Loading bots for GroupMe user: ${userId}`);
+      addDebug(`Loading bots for user ${userId} (GroupMe: ${groupmeUserId})`);
       
       const token = await user.getIdToken();
-      const res = await fetch(`/api/admin/groupme/user-bots?user_id=${userId}`, {
+      const res = await fetch(`/api/admin/groupme/user-bots?user_id=${groupmeUserId}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -100,20 +103,29 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
 
       if (!res.ok) {
         const errorText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errorText}`);
+        addDebug(`Failed to load bots for user ${userId}: ${errorText}`);
+        return;
       }
 
       const data = await res.json();
-      setBotData(data);
-      addDebug(`Found ${data.bots?.length || 0} bots and ${data.groups?.length || 0} groups`);
+      addDebug(`User ${userId}: Found ${data.bots?.length || 0} bots`);
+      
+      // Update the user in storeUsers with bot data
+      setStoreUsers(prevUsers => 
+        prevUsers.map(u => 
+          u.id === userId 
+            ? { ...u, botData: data }
+            : u
+        )
+      );
       
     } catch (err) {
-      addDebug(`Failed to load bots: ${err.message}`);
+      addDebug(`Failed to load bots for user ${userId}: ${err.message}`);
     }
   }, [user, addDebug]);
 
   // Debug specific bot
-  const debugBot = useCallback(async (botId) => {
+  const debugBot = useCallback(async (botId, groupmeUserId) => {
     try {
       setLoading(true);
       addDebug(`Debugging bot: ${botId}`);
@@ -144,17 +156,17 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
     } finally {
       setLoading(false);
     }
-  }, [user, groupmeUserId, addDebug]);
+  }, [user, addDebug]);
 
   // Delete bot for user
-  const deleteBot = useCallback(async (botId) => {
+  const deleteBot = useCallback(async (botId, userId, groupmeUserId) => {
     if (!confirm(`Are you sure you want to delete bot ${botId}? This cannot be undone.`)) {
       return;
     }
 
     try {
       setLoading(true);
-      addDebug(`Admin deleting bot: ${botId}`);
+      addDebug(`Admin deleting bot: ${botId} for user ${userId}`);
       
       const token = await user.getIdToken();
       const res = await fetch(`/api/admin/groupme/delete-bot`, {
@@ -176,93 +188,122 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
 
       addDebug(`Bot ${botId} deleted successfully`);
       
-      // Reload bot data
-      await loadUserBots(groupmeUserId);
+      // Reload bot data for this user
+      await loadUserBots(userId, groupmeUserId);
       
     } catch (err) {
       addDebug(`Delete failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
-  }, [user, groupmeUserId, addDebug, loadUserBots]);
+  }, [user, addDebug, loadUserBots]);
 
   return (
     <div className="space-y-4">
-      {/* User Lookup Section */}
+      {/* Store Lookup Section */}
       <div className="bg-tertiary rounded-xl p-4 border border-themed">
-        <h4 className="text-md font-semibold mb-3 text-primary">User Lookup</h4>
+        <h4 className="text-md font-semibold mb-3 text-primary">Store Lookup</h4>
         
         <div className="flex gap-2 mb-3">
           <input
-            type="text"
-            placeholder="Enter user email or Firebase UID"
-            value={targetUserId}
-            onChange={(e) => setTargetUserId(e.target.value)}
+            type="number"
+            placeholder="Enter store number (e.g. 1234)"
+            value={storeNumber}
+            onChange={(e) => setStoreNumber(e.target.value)}
             className="flex-1 rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
-            onKeyPress={(e) => e.key === 'Enter' && lookupUser()}
+            onKeyPress={(e) => e.key === 'Enter' && lookupStore()}
           />
           <Button
-            onClick={lookupUser}
-            disabled={loading || !targetUserId.trim()}
+            onClick={lookupStore}
+            disabled={loading || !storeNumber.trim()}
             className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2"
           >
-            {loading ? "Looking up..." : "Lookup"}
+            {loading ? "Looking up..." : "Lookup Store"}
           </Button>
         </div>
-
-        {groupmeUserId && (
-          <div className="text-sm text-green-400">
-            ✓ Found GroupMe connection: {groupmeUserId}
-          </div>
-        )}
       </div>
 
-      {/* Bot Management Section */}
-      {botData && (
+      {/* Store Users Section */}
+      {storeUsers.length > 0 && (
         <div className="bg-tertiary rounded-xl p-4 border border-themed">
           <h4 className="text-md font-semibold mb-3 text-primary">
-            User's GroupMe Bots ({botData.bots?.length || 0})
+            Store {storeNumber} Users ({storeUsers.length})
           </h4>
           
-          {botData.bots && botData.bots.length > 0 ? (
-            <div className="space-y-3">
-              {botData.bots.map((bot) => (
-                <div key={bot.bot_id} className="flex items-center justify-between p-3 bg-secondary rounded-lg border border-themed">
+          <div className="space-y-4">
+            {storeUsers.map((storeUser) => (
+              <div key={storeUser.id} className="border border-themed rounded-lg p-4 bg-secondary">
+                {/* User Info Header */}
+                <div className="flex items-center justify-between mb-3">
                   <div className="flex-1">
-                    <div className="text-sm font-medium text-primary">{bot.name}</div>
-                    <div className="text-xs text-secondary">
-                      Bot ID: {bot.bot_id} | Group: {bot.group_name || bot.group_id}
+                    <div className="font-medium text-primary">
+                      {storeUser.firstName} {storeUser.lastName}
                     </div>
-                    {bot.callback_url && (
-                      <div className="text-xs text-muted">
-                        Callback: {bot.callback_url}
+                    <div className="text-sm text-secondary">{storeUser.email}</div>
+                    <div className="text-xs text-muted">
+                      {storeUser.jobTitle} | User ID: {storeUser.id}
+                    </div>
+                  </div>
+                  <div className="text-sm">
+                    {storeUser.groupme_user_id ? (
+                      <span className="text-green-400">✓ GroupMe Connected</span>
+                    ) : (
+                      <span className="text-muted">No GroupMe</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* GroupMe Bots for this user */}
+                {storeUser.groupme_user_id && storeUser.botData && (
+                  <div className="mt-3 pt-3 border-t border-themed">
+                    <div className="text-sm font-medium text-primary mb-2">
+                      GroupMe Bots ({storeUser.botData.bots?.length || 0})
+                    </div>
+                    
+                    {storeUser.botData.bots && storeUser.botData.bots.length > 0 ? (
+                      <div className="space-y-2">
+                        {storeUser.botData.bots.map((bot) => (
+                          <div key={bot.bot_id} className="flex items-center justify-between p-2 bg-tertiary rounded border border-themed">
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-primary">{bot.name}</div>
+                              <div className="text-xs text-secondary">
+                                Bot ID: {bot.bot_id} | Group: {bot.group_name || bot.group_id}
+                              </div>
+                              {bot.callback_url && (
+                                <div className="text-xs text-muted">
+                                  Callback: {bot.callback_url}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex gap-2 ml-4">
+                              <Button
+                                onClick={() => debugBot(bot.bot_id, storeUser.groupme_user_id)}
+                                disabled={loading}
+                                className="bg-yellow-600 hover:bg-yellow-700 text-white text-xs px-2 py-1"
+                              >
+                                Debug
+                              </Button>
+                              <Button
+                                onClick={() => deleteBot(bot.bot_id, storeUser.id, storeUser.groupme_user_id)}
+                                disabled={loading}
+                                className="bg-red-600 hover:bg-red-700 text-white text-xs px-2 py-1"
+                              >
+                                Delete
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-muted py-2">
+                        No GroupMe bots found for this user
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2 ml-4">
-                    <Button
-                      onClick={() => debugBot(bot.bot_id)}
-                      disabled={loading}
-                      className="bg-yellow-600 hover:bg-yellow-700 text-white text-xs px-2 py-1"
-                    >
-                      Debug
-                    </Button>
-                    <Button
-                      onClick={() => deleteBot(bot.bot_id)}
-                      disabled={loading}
-                      className="bg-red-600 hover:bg-red-700 text-white text-xs px-2 py-1"
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-sm text-muted py-4 text-center">
-              No bots found for this user
-            </div>
-          )}
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
