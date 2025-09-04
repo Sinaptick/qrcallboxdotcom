@@ -2561,27 +2561,36 @@ export const groupmeAdminLookupStore = onRequest({
     const { store_number } = req.body;
     if (!store_number) return res.status(400).send("Missing store_number");
     
-    logger.info("Admin looking up store", { store_number, admin: decodedToken.uid });
+    // Convert to both string and number to handle inconsistent data types
+    const storeNum = parseInt(store_number);
+    const storeStr = String(store_number);
     
-    // Find all users for this store
-    const usersSnapshot = await db.collection("users")
-      .where("storeNumber", "==", store_number)
-      .get();
+    logger.info("Admin looking up store", { 
+      store_number, 
+      storeNum,
+      storeStr,
+      admin: decodedToken.uid 
+    });
     
-    // Also check homeStore field
-    const homeStoreSnapshot = await db.collection("users")
-      .where("homeStore", "==", store_number)
-      .get();
+    // Find all users for this store - check both string and number formats
+    const queries = [
+      // Check storeNumber field
+      db.collection("users").where("storeNumber", "==", storeNum).get(),
+      db.collection("users").where("storeNumber", "==", storeStr).get(),
+      // Check homeStore field  
+      db.collection("users").where("homeStore", "==", storeNum).get(),
+      db.collection("users").where("homeStore", "==", storeStr).get(),
+      // Check allowedStores array
+      db.collection("users").where("allowedStores", "array-contains", storeNum).get(),
+      db.collection("users").where("allowedStores", "array-contains", storeStr).get()
+    ];
     
-    // Also check allowedStores array
-    const allowedStoresSnapshot = await db.collection("users")
-      .where("allowedStores", "array-contains", store_number)
-      .get();
+    const snapshots = await Promise.all(queries);
     
     // Combine all users and deduplicate
     const allUsers = new Map();
     
-    [usersSnapshot, homeStoreSnapshot, allowedStoresSnapshot].forEach(snapshot => {
+    snapshots.forEach(snapshot => {
       snapshot.docs.forEach(doc => {
         const userData = doc.data();
         allUsers.set(doc.id, {

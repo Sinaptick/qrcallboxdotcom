@@ -49,23 +49,57 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
       addDebug(`Looking up store: ${storeNumber}`);
       
       const token = await user.getIdToken();
-      const res = await fetch(`/api/groupme/admin-lookup-store`, {
+      addDebug(`Got auth token: ${token.substring(0, 20)}...`);
+      
+      const url = `/api/groupme/admin-lookup-store`;
+      const fullUrl = `${window.location.origin}${url}`;
+      addDebug(`Calling API URL: ${url}`);
+      addDebug(`Full URL: ${fullUrl}`);
+      console.log('Admin GroupMe lookup - Full URL:', fullUrl);
+      
+      const requestBody = JSON.stringify({
+        store_number: parseInt(storeNumber.trim())
+      });
+      addDebug(`Request body: ${requestBody}`);
+      console.log('Admin GroupMe lookup - Request body:', requestBody);
+      
+      const res = await fetch(url, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          store_number: parseInt(storeNumber.trim())
-        })
+        body: requestBody
       });
-
+      
+      addDebug(`Response status: ${res.status} ${res.statusText}`);
+      console.log('Admin GroupMe lookup - Response:', res.status, res.statusText);
+      
+      // Log response headers
+      const headers = {};
+      res.headers.forEach((value, key) => {
+        headers[key] = value;
+      });
+      addDebug(`Response headers: ${JSON.stringify(headers)}`);
+      console.log('Admin GroupMe lookup - Headers:', headers);
+      
+      const responseText = await res.text();
+      addDebug(`Raw response (first 500 chars): ${responseText.substring(0, 500)}`);
+      console.log('Admin GroupMe lookup - Response text:', responseText);
+      
       if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errorText}`);
+        console.error('Admin GroupMe lookup - Error response:', responseText);
+        throw new Error(`HTTP ${res.status}: ${responseText}`);
       }
 
-      const data = await res.json();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        addDebug(`Successfully parsed JSON response`);
+      } catch (parseError) {
+        addDebug(`Failed to parse JSON: ${parseError.message}`);
+        throw new Error(`Invalid JSON response: ${responseText.substring(0, 200)}`);
+      }
       
       if (data.users && data.users.length > 0) {
         setStoreUsers(data.users);
