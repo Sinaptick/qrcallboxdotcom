@@ -5,6 +5,7 @@ import TicketQueue from "../../TicketQueue.jsx";
 import UserManagement from "../../app.jsx";
 import DataCleanupTool from "../../app.jsx";
 import BlockedIPsManager from "../../BlockedIPsManager.jsx";
+import GroupMeSetup from "../../GroupMeSetup.jsx";
 
 /**
  * AdminPanel Component
@@ -25,7 +26,7 @@ const AdminPanel = React.memo(function AdminPanel({
       {/* Admin Navigation */}
       <div className="mb-6">
         <div className="flex gap-2 border-b border-themed">
-          {["Overview", "Support Tickets", "User Management", "Spam Protection", "Data Cleanup"].map((view) => (
+          {["Overview", "Support Tickets", "User Management", "GroupMe Bots", "Spam Protection", "Data Cleanup"].map((view) => (
             <button
               key={view}
               onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
@@ -60,6 +61,15 @@ const AdminPanel = React.memo(function AdminPanel({
         <div className="space-y-6">
           <UserManagement db={db} />
           <UnapprovedUsersList db={db} />
+        </div>
+      )}
+
+      {currentAdminView === "groupme_bots" && (
+        <div className="space-y-6">
+          <div className="text-sm text-secondary mb-4">
+            Manage GroupMe bot integrations for all users. This allows you to help users set up and troubleshoot their GroupMe bots.
+          </div>
+          <GroupMeSetup />
         </div>
       )}
 
