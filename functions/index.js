@@ -2535,3 +2535,172 @@ export const getUser = onRequest({
     res.status(500).json({ error: error.message });
   }
 });
+
+// ===== Admin GroupMe Store Lookup =====
+export const adminGroupmeLookupStore = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { store_number } = req.body;
+    if (!store_number) return res.status(400).send("Missing store_number");
+    
+    logger.info("Admin looking up store", { store_number, admin: decodedToken.uid });
+    
+    // Find all users for this store
+    const usersSnapshot = await db.collection("users")
+      .where("storeNumber", "==", store_number)
+      .get();
+    
+    // Also check homeStore field
+    const homeStoreSnapshot = await db.collection("users")
+      .where("homeStore", "==", store_number)
+      .get();
+    
+    // Also check allowedStores array
+    const allowedStoresSnapshot = await db.collection("users")
+      .where("allowedStores", "array-contains", store_number)
+      .get();
+    
+    // Combine all users and deduplicate
+    const allUsers = new Map();
+    
+    [usersSnapshot, homeStoreSnapshot, allowedStoresSnapshot].forEach(snapshot => {
+      snapshot.docs.forEach(doc => {
+        const userData = doc.data();
+        allUsers.set(doc.id, {
+          id: doc.id,
+          firstName: userData.firstName || '',
+          lastName: userData.lastName || '',
+          email: userData.email || '',
+          jobTitle: userData.jobTitle || '',
+          storeNumber: userData.storeNumber || '',
+          homeStore: userData.homeStore || '',
+          allowedStores: userData.allowedStores || [],
+          groupme_user_id: null // Will be populated below
+        });
+      });
+    });
+    
+    // Get GroupMe user IDs for each user
+    for (const [userId, userData] of allUsers.entries()) {
+      try {
+        const tokenSnapshot = await db.collection("groupme_tokens")
+          .where("firebase_uid", "==", userId)
+          .get();
+        
+        if (!tokenSnapshot.empty) {
+          const tokenDoc = tokenSnapshot.docs[0];
+          const tokenData = tokenDoc.data();
+          userData.groupme_user_id = tokenData.user_id;
+        }
+      } catch (error) {
+        logger.warn(`Failed to get GroupMe token for user ${userId}`, { error: error.message });
+      }
+    }
+    
+    const users = Array.from(allUsers.values());
+    
+    logger.info("Store lookup completed", { 
+      store_number, 
+      users_found: users.length,
+      users_with_groupme: users.filter(u => u.groupme_user_id).length
+    });
+    
+    res.json({ users });
+    
+  } catch (error) {
+    logger.error("Admin store lookup error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin GroupMe User Bots =====
+export const adminGroupmeUserBots = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { user_id } = req.query;
+    if (!user_id) return res.status(400).send("Missing user_id (GroupMe user ID)");
+    
+    logger.info("Admin fetching bots for GroupMe user", { user_id, admin: decodedToken.uid });
+    
+    // Get user's GroupMe access token
+    const tokensSnapshot = await db.collection("groupme_tokens")
+      .where("user_id", "==", String(user_id))
+      .get();
+    
+    if (tokensSnapshot.empty) {
+      return res.json({ bots: [], groups: [], error: "No GroupMe tokens found for user" });
+    }
+    
+    const tokenDoc = tokensSnapshot.docs[0];
+    const tokenData = tokenDoc.data();
+    const { access_token } = tokenData;
+    
+    // Fetch bots from GroupMe API
+    const botsResponse = await fetch(`https://api.groupme.com/v3/bots?token=${access_token}`);
+    const botsData = await botsResponse.json();
+    
+    // Fetch groups from GroupMe API
+    const groupsResponse = await fetch(`https://api.groupme.com/v3/groups?token=${access_token}`);
+    const groupsData = await groupsResponse.json();
+    
+    // Add group names to bots
+    const bots = (botsData.response || []).map(bot => {
+      const group = groupsData.response?.find(g => g.id === bot.group_id);
+      return {
+        ...bot,
+        group_name: group?.name || 'Unknown Group'
+      };
+    });
+    
+    logger.info("Admin bot fetch completed", { 
+      user_id, 
+      bots_found: bots.length,
+      groups_found: groupsData.response?.length || 0
+    });
+    
+    res.json({ 
+      bots,
+      groups: groupsData.response || []
+    });
+    
+  } catch (error) {
+    logger.error("Admin user bots fetch error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
