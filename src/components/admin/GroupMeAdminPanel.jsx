@@ -49,7 +49,7 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
       addDebug(`Looking up store: ${storeNumber}`);
       
       const token = await user.getIdToken();
-      const res = await fetch(`/api/admin-groupme-lookup-store`, {
+      const res = await fetch(`/api/adminGroupmeLookupStore`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -95,7 +95,7 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
       addDebug(`Loading bots for user ${userId} (GroupMe: ${groupmeUserId})`);
       
       const token = await user.getIdToken();
-      const res = await fetch(`/api/admin-groupme-user-bots?user_id=${groupmeUserId}`, {
+      const res = await fetch(`/api/adminGroupmeUserBots?user_id=${groupmeUserId}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
