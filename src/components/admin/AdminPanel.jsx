@@ -1,9 +1,7 @@
 import React from "react";
 import UnapprovedUsersList from "../../UnapprovedUsersList.jsx";
-import PendingChangesList from "../../app.jsx";
+import PendingChangesList from "./PendingChangesList.jsx";
 import TicketQueue from "../../TicketQueue.jsx";
-import UserManagement from "../../app.jsx";
-import DataCleanupTool from "../../app.jsx";
 import BlockedIPsManager from "../../BlockedIPsManager.jsx";
 import GroupMeAdminPanel from "./GroupMeAdminPanel.jsx";
 
@@ -59,7 +57,13 @@ const AdminPanel = React.memo(function AdminPanel({
 
       {currentAdminView === "user_management" && (
         <div className="space-y-6">
-          <UserManagement db={db} />
+          <div className="bg-secondary rounded-xl p-4 border border-themed">
+            <h4 className="text-md font-semibold mb-3 text-primary">User Management</h4>
+            <div className="text-sm text-muted">
+              User management functionality is temporarily unavailable to prevent circular dependencies. 
+              This will be restored in a future update.
+            </div>
+          </div>
           <UnapprovedUsersList db={db} />
         </div>
       )}
@@ -78,7 +82,13 @@ const AdminPanel = React.memo(function AdminPanel({
       )}
 
       {currentAdminView === "data_cleanup" && (
-        <DataCleanupTool db={db} />
+        <div className="bg-secondary rounded-xl p-4 border border-themed">
+          <h4 className="text-md font-semibold mb-3 text-primary">Data Cleanup Tool</h4>
+          <div className="text-sm text-muted">
+            Data cleanup functionality is temporarily unavailable to prevent circular dependencies. 
+            This will be restored in a future update.
+          </div>
+        </div>
       )}
     </div>
   );
