@@ -2537,7 +2537,7 @@ export const getUser = onRequest({
 });
 
 // ===== Admin GroupMe Store Lookup =====
-export const adminGroupmeLookupStore = onRequest({
+export const groupmeAdminLookupStore = onRequest({
   region: REGION,
   cors: { origin: ALLOWED_ORIGINS },
   invoker: "public"
@@ -2632,7 +2632,7 @@ export const adminGroupmeLookupStore = onRequest({
 });
 
 // ===== Admin GroupMe User Bots =====
-export const adminGroupmeUserBots = onRequest({
+export const groupmeAdminUserBots = onRequest({
   region: REGION,
   cors: { origin: ALLOWED_ORIGINS },
   invoker: "public"
