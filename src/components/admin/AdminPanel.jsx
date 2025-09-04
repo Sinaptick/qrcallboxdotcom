@@ -5,7 +5,7 @@ import TicketQueue from "../../TicketQueue.jsx";
 import UserManagement from "../../app.jsx";
 import DataCleanupTool from "../../app.jsx";
 import BlockedIPsManager from "../../BlockedIPsManager.jsx";
-import GroupMeSetup from "../../GroupMeSetup.jsx";
+import GroupMeAdminPanel from "./GroupMeAdminPanel.jsx";
 
 /**
  * AdminPanel Component
@@ -67,9 +67,9 @@ const AdminPanel = React.memo(function AdminPanel({
       {currentAdminView === "groupme_bots" && (
         <div className="space-y-6">
           <div className="text-sm text-secondary mb-4">
-            Manage GroupMe bot integrations for all users. This allows you to help users set up and troubleshoot their GroupMe bots.
+            Manage GroupMe bot integrations for all users. Look up any user by email or ID to view, debug, or delete their GroupMe bots.
           </div>
-          <GroupMeSetup />
+          <GroupMeAdminPanel />
         </div>
       )}
 
