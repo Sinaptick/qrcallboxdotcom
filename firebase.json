@@ -25,6 +25,8 @@
       { "source": "/api/groupme/debug-bots", "function": { "functionId": "groupmeDebugBots", "region": "us-central1" } },
       { "source": "/api/groupme/admin-create-bot", "function": { "functionId": "groupmeAdminCreateBot", "region": "us-central1" } },
       { "source": "/api/groupme/admin-user-data", "function": { "functionId": "groupmeAdminUserData", "region": "us-central1" } },
+      { "source": "/api/groupme/admin-lookup-store", "function": { "functionId": "groupmeAdminLookupStore", "region": "us-central1" } },
+      { "source": "/api/groupme/admin-user-bots", "function": { "functionId": "groupmeAdminUserBots", "region": "us-central1" } },
       { "source": "/api/groupme/profile", "function": { "functionId": "groupmeUserProfile", "region": "us-central1" } },
       { "source": "/api/groupme/webhook", "function": { "functionId": "groupmeWebhook", "region": "us-central1" } },
       { "source": "/api/users/**", "function": { "functionId": "getUser", "region": "us-central1" } },
