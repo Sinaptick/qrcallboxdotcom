@@ -23,6 +23,8 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
   const [adminGroups, setAdminGroups] = useState([]);
   const [adminSelectedGroup, setAdminSelectedGroup] = useState("");
   const [adminBotStoreNumber, setAdminBotStoreNumber] = useState("");
+  const [allBots, setAllBots] = useState([]);
+  const [showBotOverview, setShowBotOverview] = useState(false);
 
   // Debug logging function
   const addDebug = useCallback((message) => {
@@ -438,6 +440,85 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
     }
   }, [adminSelectedGroup, adminBotStoreNumber, user, addDebug, handleError]);
 
+  // Load all bots overview
+  const loadAllBots = useCallback(async () => {
+    try {
+      setLoading(true);
+      addDebug("Loading all GroupMe bots overview");
+      
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/admin-all-bots`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        addDebug(`Failed to load all bots: ${errorText}`);
+        handleError(`Failed to load bots: ${errorText}`);
+        return;
+      }
+
+      const data = await res.json();
+      setAllBots(data.bots || []);
+      addDebug(`Loaded ${data.bots?.length || 0} total bots`);
+      
+    } catch (err) {
+      addDebug(`Failed to load all bots: ${err.message}`);
+      handleError(`Failed to load bots: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, addDebug, handleError]);
+
+  // Show bot overview
+  const showBotOverviewPanel = useCallback(async () => {
+    setShowBotOverview(true);
+    await loadAllBots();
+  }, [loadAllBots]);
+
+  // Delete any bot (admin power)
+  const deleteAnyBot = useCallback(async (bot) => {
+    if (!confirm(`Are you sure you want to delete bot "${bot.name}" for store ${bot.store}? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      addDebug(`Admin deleting bot: ${bot.bot_id} (${bot.name})`);
+      
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/admin-delete-any-bot`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          bot_id: bot.bot_id,
+          user_id: bot.user_id
+        })
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      addDebug(`Bot ${bot.bot_id} deleted successfully`);
+      
+      // Reload all bots
+      await loadAllBots();
+      
+    } catch (err) {
+      addDebug(`Delete failed: ${err.message}`);
+      handleError(`Failed to delete bot: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, addDebug, handleError, loadAllBots]);
+
   return (
     <div className="space-y-4">
       {/* Admin Bot Creation Section */}
@@ -515,6 +596,101 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
                 Cancel
               </Button>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bot Overview Section */}
+      <div className="bg-tertiary rounded-xl p-4 border border-themed">
+        <h4 className="text-md font-semibold mb-3 text-primary">Bot Overview</h4>
+        <div className="text-sm text-secondary mb-4">
+          View all GroupMe bots in the system with their store assignments and owners.
+        </div>
+        
+        {!showBotOverview ? (
+          <Button
+            onClick={showBotOverviewPanel}
+            disabled={loading}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white"
+          >
+            {loading ? "Loading..." : "View All Bots"}
+          </Button>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <div className="text-sm font-medium text-primary">
+                Total Bots: {allBots.length}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  onClick={loadAllBots}
+                  disabled={loading}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1"
+                >
+                  {loading ? "Refreshing..." : "Refresh"}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowBotOverview(false);
+                    setAllBots([]);
+                  }}
+                  disabled={loading}
+                  className="bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1"
+                >
+                  Hide
+                </Button>
+              </div>
+            </div>
+            
+            {allBots.length > 0 ? (
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {allBots.map((bot) => (
+                  <div key={bot.bot_id} className="border border-themed rounded-lg p-3 bg-secondary">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="text-sm font-medium text-primary">{bot.name}</div>
+                          <div className="bg-blue-600 text-white text-xs px-2 py-1 rounded">
+                            Store {bot.store}
+                          </div>
+                          {bot.admin_self_created && (
+                            <div className="bg-purple-600 text-white text-xs px-2 py-1 rounded">
+                              Admin Bot
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="text-xs text-secondary space-y-1">
+                          <div>Bot ID: {bot.bot_id}</div>
+                          <div>Group ID: {bot.group_id}</div>
+                          <div>Owner: {bot.firebase_uid} ({bot.user_id})</div>
+                          {bot.created_at && (
+                            <div>Created: {new Date(bot.created_at.seconds * 1000).toLocaleString()}</div>
+                          )}
+                          {bot.created_by_admin && (
+                            <div>Created by admin: {bot.created_by_admin}</div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="flex gap-2 ml-4">
+                        <Button
+                          onClick={() => deleteAnyBot(bot)}
+                          disabled={loading}
+                          className="bg-red-600 hover:bg-red-700 text-white text-xs px-2 py-1"
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-muted py-4 text-center">
+                {loading ? "Loading bots..." : "No bots found in the system"}
+              </div>
+            )}
           </div>
         )}
       </div>

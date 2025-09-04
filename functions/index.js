@@ -3044,3 +3044,159 @@ export const groupmeAdminCreateBotForSelf = onRequest({
     res.status(500).send("Internal server error: " + error.message);
   }
 });
+
+// ===== Admin Get All Bots =====
+export const groupmeAdminAllBots = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    logger.info("Admin fetching all bots", { admin: decodedToken.uid });
+    
+    // Get all bots from the database
+    const botsSnapshot = await db.collection("groupme_bots").get();
+    
+    const bots = [];
+    botsSnapshot.docs.forEach(doc => {
+      const botData = doc.data();
+      bots.push({
+        bot_id: botData.bot_id,
+        name: botData.name || 'Unnamed Bot',
+        group_id: botData.group_id,
+        user_id: botData.user_id,
+        firebase_uid: botData.firebase_uid,
+        store: botData.store || 'Unknown',
+        callback_url: botData.callback_url,
+        created_at: botData.created_at,
+        created_by_admin: botData.created_by_admin,
+        admin_self_created: botData.admin_self_created || false,
+        avatar_url: botData.avatar_url
+      });
+    });
+    
+    // Sort by store number and creation date
+    bots.sort((a, b) => {
+      const storeA = parseInt(a.store) || 0;
+      const storeB = parseInt(b.store) || 0;
+      if (storeA !== storeB) {
+        return storeA - storeB;
+      }
+      // If same store, sort by creation date (newest first)
+      const dateA = a.created_at?.seconds || 0;
+      const dateB = b.created_at?.seconds || 0;
+      return dateB - dateA;
+    });
+    
+    logger.info("Admin all bots fetch completed", { 
+      total_bots: bots.length,
+      admin_bots: bots.filter(b => b.admin_self_created).length,
+      user_bots: bots.filter(b => !b.admin_self_created).length
+    });
+    
+    res.json({ bots });
+    
+  } catch (error) {
+    logger.error("Admin all bots fetch error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin Delete Any Bot =====
+export const groupmeAdminDeleteAnyBot = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { bot_id, user_id } = req.body;
+    if (!bot_id || !user_id) {
+      return res.status(400).send("Missing required fields: bot_id, user_id");
+    }
+    
+    logger.info("Admin deleting any bot", { bot_id, user_id, admin: decodedToken.uid });
+    
+    // Get the GroupMe access token for the bot owner
+    const tokensSnapshot = await db.collection("groupme_tokens")
+      .where("user_id", "==", String(user_id))
+      .get();
+    
+    if (tokensSnapshot.empty) {
+      logger.warn("No GroupMe tokens found for bot owner", { user_id, bot_id });
+      // Still try to delete from our database
+    } else {
+      // Delete from GroupMe API using bot owner's token
+      const tokenDoc = tokensSnapshot.docs[0];
+      const tokenData = tokenDoc.data();
+      const { access_token } = tokenData;
+      
+      try {
+        const deleteResp = await fetch(`https://api.groupme.com/v3/bots/destroy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Access-Token": access_token
+          },
+          body: JSON.stringify({ bot_id })
+        });
+        
+        if (deleteResp.ok) {
+          logger.info("Admin delete - Bot deleted from GroupMe API", { bot_id });
+        } else {
+          logger.warn("Admin delete - Failed to delete bot from GroupMe API", { 
+            bot_id, 
+            status: deleteResp.status 
+          });
+        }
+      } catch (apiError) {
+        logger.warn("Admin delete - Error calling GroupMe API", { 
+          bot_id, 
+          error: apiError.message 
+        });
+      }
+    }
+    
+    // Delete from our database regardless of API response
+    await db.collection("groupme_bots").doc(bot_id).delete();
+    logger.info("Admin delete - Bot deleted from database", { bot_id });
+    
+    res.json({ 
+      success: true, 
+      message: "Bot deleted successfully"
+    });
+    
+  } catch (error) {
+    logger.error("Admin delete any bot error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
