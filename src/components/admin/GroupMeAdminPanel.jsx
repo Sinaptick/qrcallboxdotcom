@@ -19,6 +19,10 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
   const [selectedUserForBot, setSelectedUserForBot] = useState(null);
   const [userGroups, setUserGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState("");
+  const [adminBotMode, setAdminBotMode] = useState(false);
+  const [adminGroups, setAdminGroups] = useState([]);
+  const [adminSelectedGroup, setAdminSelectedGroup] = useState("");
+  const [adminBotStoreNumber, setAdminBotStoreNumber] = useState("");
 
   // Debug logging function
   const addDebug = useCallback((message) => {
@@ -329,8 +333,192 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
     }
   }, [selectedUserForBot, selectedGroup, storeNumber, user, addDebug, handleError, loadUserBots]);
 
+  // Load admin's own GroupMe groups
+  const loadAdminGroups = useCallback(async () => {
+    try {
+      addDebug("Loading admin's GroupMe groups");
+      
+      const token = await user.getIdToken();
+      // First get admin's GroupMe user ID
+      const userDataRes = await fetch(`/api/groupme/admin-user-data?firebase_uid=${user.uid}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (!userDataRes.ok) {
+        addDebug("Admin doesn't have GroupMe connected");
+        return;
+      }
+      
+      const userData = await userDataRes.json();
+      const adminGroupmeUserId = userData.groupme_user_id;
+      
+      if (!adminGroupmeUserId) {
+        addDebug("Admin GroupMe user ID not found");
+        return;
+      }
+      
+      // Load admin's groups
+      const groupsRes = await fetch(`/api/groupme/groups?user_id=${adminGroupmeUserId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!groupsRes.ok) {
+        const errorText = await groupsRes.text();
+        addDebug(`Failed to load admin groups: ${errorText}`);
+        return;
+      }
+
+      const groupsData = await groupsRes.json();
+      const groups = groupsData.response || [];
+      setAdminGroups(groups);
+      addDebug(`Admin: Found ${groups.length} GroupMe groups`);
+      
+    } catch (err) {
+      addDebug(`Failed to load admin groups: ${err.message}`);
+    }
+  }, [user, addDebug]);
+
+  // Start admin bot creation mode
+  const startAdminBotMode = useCallback(async () => {
+    setAdminBotMode(true);
+    setAdminGroups([]);
+    setAdminSelectedGroup("");
+    setAdminBotStoreNumber("");
+    addDebug("Starting admin bot creation mode");
+    await loadAdminGroups();
+  }, [loadAdminGroups, addDebug]);
+
+  // Create bot for admin's own account
+  const createAdminBot = useCallback(async () => {
+    if (!adminSelectedGroup || !adminBotStoreNumber.trim()) {
+      handleError("Please select a group and enter a store number");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      addDebug(`Creating admin bot for store ${adminBotStoreNumber} in group ${adminSelectedGroup}`);
+      
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/admin-create-bot-for-self`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          group_id: adminSelectedGroup,
+          store_number: parseInt(adminBotStoreNumber.trim())
+        })
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const result = await res.json();
+      addDebug(`Admin bot created successfully: ${JSON.stringify(result)}`);
+      
+      // Clear admin bot mode
+      setAdminBotMode(false);
+      setAdminGroups([]);
+      setAdminSelectedGroup("");
+      setAdminBotStoreNumber("");
+      
+    } catch (err) {
+      addDebug(`Admin bot creation failed: ${err.message}`);
+      handleError(`Failed to create admin bot: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [adminSelectedGroup, adminBotStoreNumber, user, addDebug, handleError]);
+
   return (
     <div className="space-y-4">
+      {/* Admin Bot Creation Section */}
+      <div className="bg-tertiary rounded-xl p-4 border border-themed">
+        <h4 className="text-md font-semibold mb-3 text-primary">Create Bot for My Admin Account</h4>
+        <div className="text-sm text-secondary mb-4">
+          Create multiple GroupMe bots under your admin account for different stores. Perfect for managing multiple locations.
+        </div>
+        
+        {!adminBotMode ? (
+          <Button
+            onClick={startAdminBotMode}
+            disabled={loading}
+            className="bg-purple-600 hover:bg-purple-700 text-white"
+          >
+            Create Bot for Myself
+          </Button>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-primary mb-2">
+                Store Number:
+              </label>
+              <input
+                type="number"
+                placeholder="Enter store number (e.g., 3660)"
+                value={adminBotStoreNumber}
+                onChange={(e) => setAdminBotStoreNumber(e.target.value)}
+                className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+              />
+            </div>
+            
+            {adminGroups.length > 0 ? (
+              <div>
+                <label className="block text-sm font-medium text-primary mb-2">
+                  Select Your GroupMe Group:
+                </label>
+                <select
+                  value={adminSelectedGroup}
+                  onChange={(e) => setAdminSelectedGroup(e.target.value)}
+                  className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                >
+                  <option value="">Choose a group...</option>
+                  {adminGroups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name} ({group.members?.length || 0} members)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="text-sm text-muted">
+                {loading ? "Loading your GroupMe groups..." : "No GroupMe groups found. Make sure you have GroupMe connected."}
+              </div>
+            )}
+            
+            <div className="flex gap-2">
+              <Button
+                onClick={createAdminBot}
+                disabled={loading || !adminSelectedGroup || !adminBotStoreNumber.trim()}
+                className="bg-green-600 hover:bg-green-700 text-white"
+              >
+                {loading ? "Creating Bot..." : "Create CallBot"}
+              </Button>
+              <Button
+                onClick={() => {
+                  setAdminBotMode(false);
+                  setAdminGroups([]);
+                  setAdminSelectedGroup("");
+                  setAdminBotStoreNumber("");
+                }}
+                disabled={loading}
+                className="bg-gray-600 hover:bg-gray-700 text-white"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Store Lookup Section */}
       <div className="bg-tertiary rounded-xl p-4 border border-themed">
         <h4 className="text-md font-semibold mb-3 text-primary">Store Lookup</h4>
