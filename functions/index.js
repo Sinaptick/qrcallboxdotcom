@@ -2713,3 +2713,170 @@ export const groupmeAdminUserBots = onRequest({
     res.status(500).send("Internal server error: " + error.message);
   }
 });
+
+// ===== Admin Create Bot For User =====
+export const groupmeAdminCreateBotForUser = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { target_user_id, groupme_user_id, group_id, store_number } = req.body;
+    if (!target_user_id || !groupme_user_id || !group_id || !store_number) {
+      return res.status(400).send("Missing required fields: target_user_id, groupme_user_id, group_id, store_number");
+    }
+    
+    logger.info("Admin creating bot for user", { 
+      target_user_id, 
+      groupme_user_id, 
+      group_id, 
+      store_number,
+      admin: decodedToken.uid 
+    });
+    
+    // Get target user's GroupMe access token
+    const tokensSnapshot = await db.collection("groupme_tokens")
+      .where("firebase_uid", "==", target_user_id)
+      .where("user_id", "==", String(groupme_user_id))
+      .get();
+    
+    if (tokensSnapshot.empty) {
+      return res.status(404).send("No GroupMe tokens found for target user");
+    }
+    
+    const tokenDoc = tokensSnapshot.docs[0];
+    const tokenData = tokenDoc.data();
+    const { access_token } = tokenData;
+    
+    // Create unique callback URL using store number, group ID, and timestamp
+    const uniqueId = `${store_number}_${Date.now().toString(36)}`;
+    const callbackUrl = `https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeWebhook?group_id=${group_id}&uid=${uniqueId}`;
+    
+    logger.info("Admin bot creation - Using callback URL", { callbackUrl, uniqueId, store_number });
+    
+    // Check for existing bots in this group and delete them to prevent conflicts
+    try {
+      const existingBotsSnapshot = await db.collection("groupme_bots")
+        .where("user_id", "==", String(groupme_user_id))
+        .where("group_id", "==", group_id)
+        .get();
+      
+      for (const botDoc of existingBotsSnapshot.docs) {
+        const botData = botDoc.data();
+        logger.info("Admin bot creation - Deleting existing bot", { bot_id: botData.bot_id });
+        
+        try {
+          // Delete from GroupMe API
+          const deleteResp = await fetch(`https://api.groupme.com/v3/bots/destroy`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Access-Token": access_token
+            },
+            body: JSON.stringify({ bot_id: botData.bot_id })
+          });
+          
+          if (deleteResp.ok) {
+            logger.info("Admin bot creation - Existing bot deleted from GroupMe API", { bot_id: botData.bot_id });
+          }
+          
+          // Delete from our database
+          await db.collection("groupme_bots").doc(botData.bot_id).delete();
+          
+        } catch (deleteError) {
+          logger.warn("Admin bot creation - Error deleting existing bot", { 
+            bot_id: botData.bot_id, 
+            error: deleteError.message 
+          });
+        }
+      }
+    } catch (checkError) {
+      logger.warn("Admin bot creation - Error checking for existing bots", { error: checkError.message });
+    }
+    
+    // Create the new bot
+    const botRequest = {
+      bot: {
+        name: "CallBot",
+        group_id: group_id,
+        callback_url: callbackUrl
+      }
+    };
+    
+    logger.info("Admin bot creation - Calling GroupMe API", { botRequest });
+
+    const resp = await fetch("https://api.groupme.com/v3/bots", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Access-Token": access_token
+      },
+      body: JSON.stringify(botRequest)
+    });
+
+    const responseText = await resp.text();
+    logger.info("Admin bot creation - GroupMe API response", { 
+      status: resp.status, 
+      statusText: resp.statusText,
+      response: responseText.substring(0, 300) 
+    });
+
+    if (!resp.ok) {
+      throw new Error(`GroupMe API error: ${resp.status} ${responseText}`);
+    }
+
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (parseError) {
+      throw new Error(`Invalid JSON response: ${responseText}`);
+    }
+
+    const botInfo = result.response?.bot;
+    if (!botInfo || !botInfo.bot_id) {
+      throw new Error("Invalid bot response from GroupMe API");
+    }
+
+    // Store bot info in database with proper user association
+    const botData = {
+      bot_id: botInfo.bot_id,
+      name: botInfo.name,
+      group_id: group_id,
+      user_id: String(groupme_user_id),
+      firebase_uid: target_user_id,
+      callback_url: callbackUrl,
+      store: String(store_number),
+      created_by_admin: decodedToken.uid,
+      created_at: new Date(),
+      avatar_url: botInfo.avatar_url || null
+    };
+
+    await db.collection("groupme_bots").doc(botInfo.bot_id).set(botData);
+    logger.info("Admin bot creation - Bot stored in database", { bot_id: botInfo.bot_id, botData });
+
+    res.json({ 
+      success: true, 
+      bot: botData,
+      message: "Bot created successfully for user"
+    });
+    
+  } catch (error) {
+    logger.error("Admin bot creation error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});

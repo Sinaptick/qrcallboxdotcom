@@ -16,6 +16,9 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
   const [error, setError] = useState("");
   const [debugInfo, setDebugInfo] = useState([]);
   const [storeUsers, setStoreUsers] = useState([]);
+  const [selectedUserForBot, setSelectedUserForBot] = useState(null);
+  const [userGroups, setUserGroups] = useState([]);
+  const [selectedGroup, setSelectedGroup] = useState("");
 
   // Debug logging function
   const addDebug = useCallback((message) => {
@@ -232,6 +235,100 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
     }
   }, [user, addDebug, loadUserBots]);
 
+  // Load user's GroupMe groups for bot creation
+  const loadUserGroups = useCallback(async (userId, groupmeUserId) => {
+    try {
+      addDebug(`Loading groups for user ${userId} (GroupMe: ${groupmeUserId})`);
+      
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/groups?user_id=${groupmeUserId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        addDebug(`Failed to load groups for user ${userId}: ${errorText}`);
+        return;
+      }
+
+      const data = await res.json();
+      const groups = data.response || [];
+      setUserGroups(groups);
+      addDebug(`User ${userId}: Found ${groups.length} groups`);
+      
+    } catch (err) {
+      addDebug(`Failed to load groups for user ${userId}: ${err.message}`);
+    }
+  }, [user, addDebug]);
+
+  // Select user for bot creation
+  const selectUserForBot = useCallback(async (storeUser) => {
+    if (!storeUser.groupme_user_id) {
+      handleError("This user doesn't have GroupMe connected");
+      return;
+    }
+    
+    setSelectedUserForBot(storeUser);
+    setUserGroups([]);
+    setSelectedGroup("");
+    addDebug(`Selected user for bot creation: ${storeUser.firstName} ${storeUser.lastName}`);
+    
+    // Load their groups
+    await loadUserGroups(storeUser.id, storeUser.groupme_user_id);
+  }, [handleError, addDebug, loadUserGroups]);
+
+  // Create bot for selected user
+  const createBotForUser = useCallback(async () => {
+    if (!selectedUserForBot || !selectedGroup) {
+      handleError("Please select a user and group");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      addDebug(`Creating bot for ${selectedUserForBot.firstName} ${selectedUserForBot.lastName} in group ${selectedGroup}`);
+      
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/admin-create-bot-for-user`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          target_user_id: selectedUserForBot.id,
+          groupme_user_id: selectedUserForBot.groupme_user_id,
+          group_id: selectedGroup,
+          store_number: parseInt(storeNumber.trim())
+        })
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const result = await res.json();
+      addDebug(`Bot created successfully: ${JSON.stringify(result)}`);
+      
+      // Refresh the user's bot data
+      await loadUserBots(selectedUserForBot.id, selectedUserForBot.groupme_user_id);
+      
+      // Clear selection
+      setSelectedUserForBot(null);
+      setUserGroups([]);
+      setSelectedGroup("");
+      
+    } catch (err) {
+      addDebug(`Bot creation failed: ${err.message}`);
+      handleError(`Failed to create bot: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedUserForBot, selectedGroup, storeNumber, user, addDebug, handleError, loadUserBots]);
+
   return (
     <div className="space-y-4">
       {/* Store Lookup Section */}
@@ -278,11 +375,22 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
                       {storeUser.jobTitle} | User ID: {storeUser.id}
                     </div>
                   </div>
-                  <div className="text-sm">
-                    {storeUser.groupme_user_id ? (
-                      <span className="text-green-400">✓ GroupMe Connected</span>
-                    ) : (
-                      <span className="text-muted">No GroupMe</span>
+                  <div className="flex items-center gap-3">
+                    <div className="text-sm">
+                      {storeUser.groupme_user_id ? (
+                        <span className="text-green-400">✓ GroupMe Connected</span>
+                      ) : (
+                        <span className="text-muted">No GroupMe</span>
+                      )}
+                    </div>
+                    {storeUser.groupme_user_id && (
+                      <Button
+                        onClick={() => selectUserForBot(storeUser)}
+                        disabled={loading}
+                        className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1"
+                      >
+                        Create Bot
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -337,6 +445,69 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
                 )}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Admin Bot Creation Panel */}
+      {selectedUserForBot && (
+        <div className="bg-tertiary rounded-xl p-4 border border-themed">
+          <h4 className="text-md font-semibold mb-3 text-primary">
+            Create Bot for {selectedUserForBot.firstName} {selectedUserForBot.lastName}
+          </h4>
+          
+          <div className="space-y-4">
+            <div className="text-sm text-secondary">
+              Creating a bot in this user's GroupMe group will allow them to receive QR code notifications 
+              for store {storeNumber}.
+            </div>
+            
+            {userGroups.length > 0 ? (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-primary mb-2">
+                    Select GroupMe Group:
+                  </label>
+                  <select
+                    value={selectedGroup}
+                    onChange={(e) => setSelectedGroup(e.target.value)}
+                    className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                  >
+                    <option value="">Choose a group...</option>
+                    {userGroups.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name} ({group.members?.length || 0} members)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="flex gap-2">
+                  <Button
+                    onClick={createBotForUser}
+                    disabled={loading || !selectedGroup}
+                    className="bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    {loading ? "Creating Bot..." : "Create CallBot"}
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setSelectedUserForBot(null);
+                      setUserGroups([]);
+                      setSelectedGroup("");
+                    }}
+                    disabled={loading}
+                    className="bg-gray-600 hover:bg-gray-700 text-white"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-muted">
+                {loading ? "Loading user's GroupMe groups..." : "No GroupMe groups found for this user"}
+              </div>
+            )}
           </div>
         </div>
       )}
