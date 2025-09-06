@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "QRCall Workvivo Bot",
-  "version": "1.0",
-  "description": "Auto-posts QR notifications to Workvivo",
+  "name": "QRCall Workvivo Bot (WebSocket)",
+  "version": "2.0",
+  "description": "Auto-posts QR notifications to Workvivo using WebSockets (no polling!)",
   
   "permissions": [
     "activeTab",
@@ -17,7 +17,7 @@
   "content_scripts": [
     {
       "matches": ["https://walmart.workvivo.com/*"],
-      "js": ["content.js"]
+      "js": ["content_websocket.js"]
     }
   ],
   
