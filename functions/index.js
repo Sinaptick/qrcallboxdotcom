@@ -3073,12 +3073,65 @@ export const groupmeAdminAllBots = onRequest({
     const botsSnapshot = await db.collection("groupme_bots").get();
     
     const bots = [];
-    botsSnapshot.docs.forEach(doc => {
+    const groupsCache = new Map(); // Cache groups by owner
+    
+    for (const doc of botsSnapshot.docs) {
       const botData = doc.data();
+      
+      // Get group info for this bot
+      let groupName = 'Unknown Group';
+      let memberCount = 0;
+      
+      try {
+        // Check if we have this user's groups cached
+        const cacheKey = botData.user_id;
+        if (!groupsCache.has(cacheKey)) {
+          // Fetch user's groups from GroupMe API
+          const tokensSnapshot = await db.collection("groupme_tokens")
+            .where("user_id", "==", String(botData.user_id))
+            .limit(1)
+            .get();
+          
+          if (!tokensSnapshot.empty) {
+            const tokenData = tokensSnapshot.docs[0].data();
+            const groupsResponse = await fetch(`https://api.groupme.com/v3/groups?token=${tokenData.access_token}`);
+            
+            if (groupsResponse.ok) {
+              const groupsData = await groupsResponse.json();
+              const groups = (groupsData.response || []).reduce((acc, g) => {
+                acc[g.id] = {
+                  name: g.name,
+                  member_count: g.members ? g.members.length : 0
+                };
+                return acc;
+              }, {});
+              groupsCache.set(cacheKey, groups);
+            }
+          }
+        }
+        
+        // Get group info from cache
+        const userGroups = groupsCache.get(cacheKey) || {};
+        const groupInfo = userGroups[botData.group_id];
+        if (groupInfo) {
+          groupName = groupInfo.name;
+          memberCount = groupInfo.member_count;
+        }
+        
+      } catch (error) {
+        logger.warn("Failed to fetch group info for bot", { 
+          bot_id: botData.bot_id, 
+          group_id: botData.group_id, 
+          error: error.message 
+        });
+      }
+      
       bots.push({
         bot_id: botData.bot_id,
         name: botData.name || 'Unnamed Bot',
         group_id: botData.group_id,
+        group_name: groupName,
+        member_count: memberCount,
         user_id: botData.user_id,
         firebase_uid: botData.firebase_uid,
         store: botData.store || 'Unknown',
@@ -3088,7 +3141,7 @@ export const groupmeAdminAllBots = onRequest({
         admin_self_created: botData.admin_self_created || false,
         avatar_url: botData.avatar_url
       });
-    });
+    }
     
     // Sort by store number and creation date
     bots.sort((a, b) => {
@@ -3113,6 +3166,156 @@ export const groupmeAdminAllBots = onRequest({
     
   } catch (error) {
     logger.error("Admin all bots fetch error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin Get Bot Details =====
+export const groupmeAdminBotDetails = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { bot_id } = req.query;
+    if (!bot_id) {
+      return res.status(400).send("Missing bot_id parameter");
+    }
+    
+    logger.info("Admin fetching bot details", { admin: decodedToken.uid, bot_id });
+    
+    // Get bot from database
+    const botDoc = await db.collection("groupme_bots").doc(bot_id).get();
+    if (!botDoc.exists) {
+      return res.status(404).send("Bot not found");
+    }
+    
+    const botData = botDoc.data();
+    
+    try {
+      // Get the bot owner's GroupMe access token
+      const tokensSnapshot = await db.collection("groupme_tokens")
+        .where("user_id", "==", String(botData.user_id))
+        .limit(1)
+        .get();
+      
+      if (tokensSnapshot.empty) {
+        return res.json({
+          bot: botData,
+          groupDetails: null,
+          members: [],
+          recentMessages: [],
+          error: "No GroupMe token found for bot owner"
+        });
+      }
+      
+      const tokenData = tokensSnapshot.docs[0].data();
+      const { access_token } = tokenData;
+      
+      // Fetch detailed group information
+      const groupResponse = await fetch(`https://api.groupme.com/v3/groups/${botData.group_id}?token=${access_token}`);
+      let groupDetails = null;
+      let members = [];
+      
+      if (groupResponse.ok) {
+        const groupData = await groupResponse.json();
+        const group = groupData.response;
+        
+        groupDetails = {
+          id: group.id,
+          name: group.name,
+          description: group.description,
+          image_url: group.image_url,
+          creator_user_id: group.creator_user_id,
+          created_at: group.created_at,
+          updated_at: group.updated_at,
+          member_count: group.members ? group.members.length : 0
+        };
+        
+        // Get member details
+        if (group.members) {
+          members = group.members.map(member => ({
+            user_id: member.user_id,
+            nickname: member.nickname,
+            image_url: member.image_url,
+            roles: member.roles || [],
+            muted: member.muted || false
+          }));
+        }
+      }
+      
+      // Fetch recent messages (last 10)
+      const messagesResponse = await fetch(`https://api.groupme.com/v3/groups/${botData.group_id}/messages?limit=10&token=${access_token}`);
+      let recentMessages = [];
+      
+      if (messagesResponse.ok) {
+        const messagesData = await messagesResponse.json();
+        if (messagesData.response && messagesData.response.messages) {
+          recentMessages = messagesData.response.messages.map(msg => ({
+            id: msg.id,
+            text: msg.text,
+            name: msg.name,
+            user_id: msg.user_id,
+            created_at: msg.created_at,
+            system: msg.system || false,
+            favorited_by: msg.favorited_by ? msg.favorited_by.length : 0
+          }));
+        }
+      }
+      
+      // Fetch bot details from GroupMe API
+      const botsResponse = await fetch(`https://api.groupme.com/v3/bots?token=${access_token}`);
+      let liveBotData = null;
+      
+      if (botsResponse.ok) {
+        const botsData = await botsResponse.json();
+        const bots = botsData.response || [];
+        liveBotData = bots.find(b => b.bot_id === bot_id);
+      }
+      
+      res.json({
+        bot: {
+          ...botData,
+          live_data: liveBotData
+        },
+        groupDetails,
+        members,
+        recentMessages,
+        timestamp: new Date()
+      });
+      
+    } catch (error) {
+      logger.error("Error fetching bot details from GroupMe API", { 
+        bot_id, 
+        error: error.message 
+      });
+      
+      res.json({
+        bot: botData,
+        groupDetails: null,
+        members: [],
+        recentMessages: [],
+        error: error.message
+      });
+    }
+    
+  } catch (error) {
+    logger.error("Admin bot details error:", error);
     res.status(500).send("Internal server error: " + error.message);
   }
 });

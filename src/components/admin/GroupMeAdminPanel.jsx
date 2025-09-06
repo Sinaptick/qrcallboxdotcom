@@ -25,6 +25,8 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
   const [adminBotStoreNumber, setAdminBotStoreNumber] = useState("");
   const [allBots, setAllBots] = useState([]);
   const [showBotOverview, setShowBotOverview] = useState(false);
+  const [expandedBot, setExpandedBot] = useState(null);
+  const [botDetails, setBotDetails] = useState({});
 
   // Debug logging function
   const addDebug = useCallback((message) => {
@@ -519,6 +521,55 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
     }
   }, [user, addDebug, handleError, loadAllBots]);
 
+  // Load detailed bot information
+  const loadBotDetails = useCallback(async (botId) => {
+    try {
+      setLoading(true);
+      addDebug(`Loading detailed information for bot ${botId}`);
+      
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/groupme/admin-bot-details?bot_id=${botId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        addDebug(`Failed to load bot details: ${errorText}`);
+        handleError(`Failed to load bot details: ${errorText}`);
+        return;
+      }
+
+      const details = await res.json();
+      setBotDetails(prev => ({
+        ...prev,
+        [botId]: details
+      }));
+      addDebug(`Loaded details for bot ${botId}: ${details.members?.length || 0} members, ${details.recentMessages?.length || 0} recent messages`);
+      
+    } catch (err) {
+      addDebug(`Failed to load bot details: ${err.message}`);
+      handleError(`Failed to load bot details: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, addDebug, handleError]);
+
+  // Toggle bot expansion
+  const toggleBotExpansion = useCallback(async (bot) => {
+    if (expandedBot?.bot_id === bot.bot_id) {
+      // Collapse if already expanded
+      setExpandedBot(null);
+    } else {
+      // Expand and load details if not already loaded
+      setExpandedBot(bot);
+      if (!botDetails[bot.bot_id]) {
+        await loadBotDetails(bot.bot_id);
+      }
+    }
+  }, [expandedBot, botDetails, loadBotDetails]);
+
   return (
     <div className="space-y-4">
       {/* Admin Bot Creation Section */}
@@ -645,44 +696,166 @@ const GroupMeAdminPanel = React.memo(function GroupMeAdminPanel() {
             {allBots.length > 0 ? (
               <div className="space-y-3 max-h-96 overflow-y-auto">
                 {allBots.map((bot) => (
-                  <div key={bot.bot_id} className="border border-themed rounded-lg p-3 bg-secondary">
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
-                          <div className="text-sm font-medium text-primary">{bot.name}</div>
-                          <div className="bg-blue-600 text-white text-xs px-2 py-1 rounded">
-                            Store {bot.store}
-                          </div>
-                          {bot.admin_self_created && (
-                            <div className="bg-purple-600 text-white text-xs px-2 py-1 rounded">
-                              Admin Bot
+                  <div key={bot.bot_id} className="border border-themed rounded-lg bg-secondary">
+                    <div className="p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-2">
+                            <button
+                              onClick={() => toggleBotExpansion(bot)}
+                              className="text-sm font-medium text-primary hover:text-indigo-400 transition-colors flex items-center gap-2"
+                            >
+                              {bot.name}
+                              <span className="text-xs">
+                                {expandedBot?.bot_id === bot.bot_id ? '▼' : '▶'}
+                              </span>
+                            </button>
+                            <div className="bg-blue-600 text-white text-xs px-2 py-1 rounded">
+                              Store {bot.store}
                             </div>
-                          )}
+                            {bot.admin_self_created && (
+                              <div className="bg-purple-600 text-white text-xs px-2 py-1 rounded">
+                                Admin Bot
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div className="text-xs text-secondary space-y-1">
+                            <div>Bot ID: {bot.bot_id}</div>
+                            <div>Group: {bot.group_name || 'Unknown Group'} ({bot.member_count || 0} members)</div>
+                            <div>Group ID: {bot.group_id}</div>
+                            <div>Owner: {bot.firebase_uid} ({bot.user_id})</div>
+                            {bot.created_at && (
+                              <div>Created: {new Date(bot.created_at.seconds * 1000).toLocaleString()}</div>
+                            )}
+                            {bot.created_by_admin && (
+                              <div>Created by admin: {bot.created_by_admin}</div>
+                            )}
+                          </div>
                         </div>
                         
-                        <div className="text-xs text-secondary space-y-1">
-                          <div>Bot ID: {bot.bot_id}</div>
-                          <div>Group ID: {bot.group_id}</div>
-                          <div>Owner: {bot.firebase_uid} ({bot.user_id})</div>
-                          {bot.created_at && (
-                            <div>Created: {new Date(bot.created_at.seconds * 1000).toLocaleString()}</div>
-                          )}
-                          {bot.created_by_admin && (
-                            <div>Created by admin: {bot.created_by_admin}</div>
-                          )}
+                        <div className="flex gap-2 ml-4">
+                          <Button
+                            onClick={() => deleteAnyBot(bot)}
+                            disabled={loading}
+                            className="bg-red-600 hover:bg-red-700 text-white text-xs px-2 py-1"
+                          >
+                            Delete
+                          </Button>
                         </div>
                       </div>
-                      
-                      <div className="flex gap-2 ml-4">
-                        <Button
-                          onClick={() => deleteAnyBot(bot)}
-                          disabled={loading}
-                          className="bg-red-600 hover:bg-red-700 text-white text-xs px-2 py-1"
-                        >
-                          Delete
-                        </Button>
-                      </div>
                     </div>
+                    
+                    {/* Expanded Details */}
+                    {expandedBot?.bot_id === bot.bot_id && (
+                      <div className="border-t border-themed p-3 bg-tertiary">
+                        {botDetails[bot.bot_id] ? (
+                          <div className="space-y-4">
+                            {/* Group Details */}
+                            {botDetails[bot.bot_id].groupDetails && (
+                              <div>
+                                <h5 className="text-sm font-medium text-primary mb-2">Group Information</h5>
+                                <div className="text-xs text-secondary space-y-1 bg-secondary p-2 rounded">
+                                  <div><strong>Name:</strong> {botDetails[bot.bot_id].groupDetails.name}</div>
+                                  <div><strong>Description:</strong> {botDetails[bot.bot_id].groupDetails.description || 'None'}</div>
+                                  <div><strong>Members:</strong> {botDetails[bot.bot_id].groupDetails.member_count}</div>
+                                  <div><strong>Created:</strong> {new Date(botDetails[bot.bot_id].groupDetails.created_at * 1000).toLocaleString()}</div>
+                                  <div><strong>Updated:</strong> {new Date(botDetails[bot.bot_id].groupDetails.updated_at * 1000).toLocaleString()}</div>
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Members */}
+                            {botDetails[bot.bot_id].members && botDetails[bot.bot_id].members.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-primary mb-2">
+                                  Group Members ({botDetails[bot.bot_id].members.length})
+                                </h5>
+                                <div className="max-h-32 overflow-y-auto bg-secondary p-2 rounded">
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {botDetails[bot.bot_id].members.map((member, idx) => (
+                                      <div key={idx} className="text-xs text-secondary flex items-center gap-2">
+                                        {member.image_url && (
+                                          <img 
+                                            src={member.image_url} 
+                                            alt={member.nickname} 
+                                            className="w-4 h-4 rounded-full"
+                                          />
+                                        )}
+                                        <span className={`${member.muted ? 'text-muted line-through' : ''}`}>
+                                          {member.nickname}
+                                          {member.roles && member.roles.includes('admin') && (
+                                            <span className="text-yellow-400 ml-1">👑</span>
+                                          )}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Recent Messages */}
+                            {botDetails[bot.bot_id].recentMessages && botDetails[bot.bot_id].recentMessages.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-primary mb-2">
+                                  Recent Messages ({botDetails[bot.bot_id].recentMessages.length})
+                                </h5>
+                                <div className="max-h-40 overflow-y-auto bg-secondary p-2 rounded space-y-2">
+                                  {botDetails[bot.bot_id].recentMessages.map((msg, idx) => (
+                                    <div key={idx} className="text-xs border-b border-themed pb-1">
+                                      <div className="flex items-center justify-between mb-1">
+                                        <span className="text-primary font-medium">{msg.name || 'System'}</span>
+                                        <span className="text-muted">
+                                          {new Date(msg.created_at * 1000).toLocaleString()}
+                                        </span>
+                                      </div>
+                                      <div className="text-secondary">
+                                        {msg.text || '(No text)'}
+                                        {msg.favorited_by > 0 && (
+                                          <span className="text-yellow-400 ml-2">❤️ {msg.favorited_by}</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Bot Live Data */}
+                            {botDetails[bot.bot_id].bot?.live_data && (
+                              <div>
+                                <h5 className="text-sm font-medium text-primary mb-2">Live Bot Status</h5>
+                                <div className="text-xs text-secondary bg-secondary p-2 rounded space-y-1">
+                                  <div><strong>Status:</strong> <span className="text-green-400">Active</span></div>
+                                  <div><strong>Callback URL:</strong> {botDetails[bot.bot_id].bot.live_data.callback_url}</div>
+                                  {botDetails[bot.bot_id].bot.live_data.avatar_url && (
+                                    <div className="flex items-center gap-2">
+                                      <strong>Avatar:</strong> 
+                                      <img 
+                                        src={botDetails[bot.bot_id].bot.live_data.avatar_url} 
+                                        alt="Bot avatar" 
+                                        className="w-6 h-6 rounded"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {botDetails[bot.bot_id].error && (
+                              <div className="text-xs text-red-400 bg-red-900/20 p-2 rounded">
+                                Error: {botDetails[bot.bot_id].error}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-muted text-center py-4">
+                            {loading ? "Loading detailed information..." : "Click to load details"}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
