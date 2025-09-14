@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QRCallBox Android App</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=5" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            background: #4F46E5;
+            border-radius: 16px;
+            margin: 0 auto 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+            color: white;
+        }
+
+        h1 {
+            color: #1f2937;
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            font-size: 18px;
+            margin-bottom: 32px;
+        }
+
+        .download-btn {
+            background: #4F46E5;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 16px 32px;
+            font-size: 18px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.3s ease;
+            margin-bottom: 24px;
+        }
+
+        .download-btn:hover {
+            background: #3730a3;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.3);
+        }
+
+        .version {
+            background: #f3f4f6;
+            color: #6b7280;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-block;
+            margin-bottom: 24px;
+        }
+
+        .features {
+            text-align: left;
+            margin: 32px 0;
+        }
+
+        .features h3 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+
+        .feature {
+            display: flex;
+            align-items: center;
+            margin: 12px 0;
+            padding: 8px 0;
+        }
+
+        .feature-icon {
+            width: 24px;
+            height: 24px;
+            margin-right: 12px;
+            font-size: 18px;
+        }
+
+        .feature-text {
+            color: #4b5563;
+            font-size: 16px;
+        }
+
+        .debug-notice {
+            background: #fef3cd;
+            border: 1px solid #fbbf24;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 24px 0;
+            text-align: left;
+        }
+
+        .debug-notice h4 {
+            color: #92400e;
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+
+        .debug-notice p {
+            color: #78350f;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .back-link {
+            color: #6b7280;
+            text-decoration: none;
+            font-size: 14px;
+            margin-top: 24px;
+            display: inline-block;
+        }
+
+        .back-link:hover {
+            color: #4F46E5;
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 24px;
+                margin: 10px;
+            }
+            
+            h1 {
+                font-size: 24px;
+            }
+            
+            .subtitle {
+                font-size: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">📱</div>
+        <h1>QRCallBox Android</h1>
+        <p class="subtitle">Receive instant notifications when customers need assistance</p>
+        
+        <div class="version">Version 1.1 - Debug Edition</div>
+        
+        <a href="QRCallBox-debug-v1.1.apk" class="download-btn" download>
+            <span>📥</span>
+            Download APK
+        </a>
+
+        <div class="debug-notice">
+            <h4>🐛 Debug Features Included</h4>
+            <p>This version includes debugging information to help troubleshoot notification delivery. You'll see FCM token details and sync status in the app.</p>
+        </div>
+
+        <div class="features">
+            <h3>Features</h3>
+            <div class="feature">
+                <span class="feature-icon">🚨</span>
+                <span class="feature-text">Real-time push notifications</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">🎯</span>
+                <span class="feature-text">Store-specific targeting</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">⚡</span>
+                <span class="feature-text">Instant Assist/Ignore responses</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">🔄</span>
+                <span class="feature-text">Smart shift-based filtering</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">🔗</span>
+                <span class="feature-text">Syncs with GroupMe & Workvivo</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">🛠️</span>
+                <span class="feature-text">Debug info & token status</span>
+            </div>
+        </div>
+
+        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #e5e7eb;">
+            <p style="color: #6b7280; font-size: 14px; margin-bottom: 8px;">
+                <strong>Installation:</strong> Enable "Install from unknown sources" in your Android settings
+            </p>
+            <p style="color: #6b7280; font-size: 14px;">
+                <strong>Requirements:</strong> Android 7.0+ (API level 24+)
+            </p>
+        </div>
+
+        <a href="/" class="back-link">← Back to QRCallBox Dashboard</a>
+    </div>
+
+    <script>
+        // Track download attempts
+        document.querySelector('.download-btn').addEventListener('click', function() {
+            if (typeof gtag !== 'undefined') {
+                gtag('event', 'download', {
+                    'event_category': 'Android App',
+                    'event_label': 'QRCallBox-debug-v1.1'
+                });
+            }
+        });
+    </script>
+</body>
+</html>

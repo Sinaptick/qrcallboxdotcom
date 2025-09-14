@@ -4,6 +4,7 @@ import PendingChangesList from "./PendingChangesList.jsx";
 import TicketQueue from "../../TicketQueue.jsx";
 import BlockedIPsManager from "../../BlockedIPsManager.jsx";
 import GroupMeAdminPanel from "./GroupMeAdminPanel.jsx";
+import UserManagement from "./UserManagement.jsx";
 
 /**
  * AdminPanel Component
@@ -57,13 +58,7 @@ const AdminPanel = React.memo(function AdminPanel({
 
       {currentAdminView === "user_management" && (
         <div className="space-y-6">
-          <div className="bg-secondary rounded-xl p-4 border border-themed">
-            <h4 className="text-md font-semibold mb-3 text-primary">User Management</h4>
-            <div className="text-sm text-muted">
-              User management functionality is temporarily unavailable to prevent circular dependencies. 
-              This will be restored in a future update.
-            </div>
-          </div>
+          <UserManagement />
           <UnapprovedUsersList db={db} />
         </div>
       )}

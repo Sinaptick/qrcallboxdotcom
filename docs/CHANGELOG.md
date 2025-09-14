@@ -1,3 +1,4 @@
+
 # QRcallbox Changelog
 
 ## Version 2.5.0 - Code Architecture Refactoring (2025-08-26)

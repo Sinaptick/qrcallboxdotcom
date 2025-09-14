@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
+import { getMessaging } from "firebase-admin/messaging";
 
 import { onRequest } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
@@ -2147,7 +2148,7 @@ export const s = onRequest({
       lastScannedAt: FieldValue.serverTimestamp()
     });
 
-    // Log the assistance request
+    // Log the assistance request in logs collection (for admin/analytics)
     await db.collection("logs").add({
       store: tokenData.store,
       area: tokenData.area,
@@ -2164,9 +2165,28 @@ export const s = onRequest({
       groupId: null
     });
 
-    // Send GroupMe notification
+    // Also create scan record for Android app Recent Customer Requests
+    const scanRecord = {
+      timestamp: FieldValue.serverTimestamp(),
+      qrCode: token,
+      storeNumber: String(tokenData.store), // Ensure it's always a string
+      areaDescription: tokenData.area,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.get('User-Agent') || '',
+      responses: [],
+      status: "pending",
+      claimedBy: "",
+      claimedByName: "",
+      claimedAt: null,
+      resolvedAt: null
+    };
+    
+    const scanDoc = await db.collection("scans").add(scanRecord);
+
+    // Send notifications to all platforms
     await sendGroupMeNotification(tokenData.store, tokenData.area);
     await sendWorkvivoNotification(tokenData.store, tokenData.area);
+    await sendAndroidNotification(tokenData.store, tokenData.area, scanDoc.id);
 
     // Redirect to assistance page or show success message
     res.send(`
@@ -2344,6 +2364,282 @@ async function sendWorkvivoNotification(store, area) {
     logger.error("Workvivo notification error:", e.message);
   }
 }
+
+
+// ===== Debug data types endpoint =====
+export const debugDataTypes = onRequest(
+  { 
+    region: REGION, 
+    cors: { origin: ALLOWED_ORIGINS } 
+  },
+  async (req, res) => {
+    try {
+      // Get sample user document
+      const usersSnapshot = await db.collection('users').limit(3).get();
+      const userSamples = [];
+      
+      usersSnapshot.forEach(doc => {
+        const data = doc.data();
+        userSamples.push({
+          id: doc.id,
+          storeNumber: {
+            value: data.storeNumber,
+            type: typeof data.storeNumber,
+            isNumber: typeof data.storeNumber === 'number',
+            isString: typeof data.storeNumber === 'string'
+          },
+          userId: {
+            value: data.userId,
+            type: typeof data.userId,
+            exists: data.userId !== undefined
+          }
+        });
+      });
+      
+      // Get sample scan document  
+      const scansSnapshot = await db.collection('scans').limit(3).get();
+      const scanSamples = [];
+      
+      scansSnapshot.forEach(doc => {
+        const data = doc.data();
+        scanSamples.push({
+          id: doc.id,
+          storeNumber: {
+            value: data.storeNumber,
+            type: typeof data.storeNumber,
+            isNumber: typeof data.storeNumber === 'number',
+            isString: typeof data.storeNumber === 'string'
+          },
+          status: data.status,
+          claimedBy: data.claimedBy
+        });
+      });
+
+      res.json({
+        userSamples,
+        scanSamples,
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      logger.error("Error in debugDataTypes:", error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+// ===== App version check endpoint =====
+export const getAppVersion = onRequest(
+  { 
+    region: REGION, 
+    cors: { origin: ALLOWED_ORIGINS } 
+  },
+  async (req, res) => {
+    try {
+      const versionInfo = {
+        latestVersion: "1.7.22",
+        versionCode: 36,
+        downloadUrl: "https://qrwebaccdb.web.app/app/QRCallBox-debug-v1.7.22.apk",
+        releaseNotes: "✨ Complete UI Polish: Perfect header alignment with QRCallBox title, welcome message, and menu. Condensed Settings layout fits everything on one screen. Fixed Wednesday text wrapping. Professional design with optimal spacing throughout.",
+        isForceUpdate: false,
+        minimumSupportedVersion: "1.0"
+      };
+      
+      res.json(versionInfo);
+    } catch (error) {
+      logger.error("Error in getAppVersion:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+// ===== Helper: Send Android FCM notification =====
+async function sendAndroidNotification(store, area, scanId = null) {
+  try {
+    logger.info(`Starting Android notification for store ${store}, area ${area}`);
+    
+    // Get all users for the specific store who have FCM tokens
+    // Try multiple possible field names for store assignment
+    logger.info(`Querying for users with store ${store}...`);
+    
+    let usersSnapshot = await db.collection("users")
+      .where("storeNumber", "==", parseInt(store))
+      .get();
+    
+    if (usersSnapshot.empty) {
+      logger.info(`No users found with storeNumber=${store} (number). Trying string...`);
+      usersSnapshot = await db.collection("users")
+        .where("storeNumber", "==", String(store))
+        .get();
+    }
+    
+    if (usersSnapshot.empty) {
+      logger.info(`No users found with storeNumber=${store} (string). Trying homeStore...`);
+      usersSnapshot = await db.collection("users")
+        .where("homeStore", "==", String(store))
+        .get();
+    }
+    
+    if (usersSnapshot.empty) {
+      logger.info(`No users found with homeStore=${store}. Trying allowedStores array...`);
+      usersSnapshot = await db.collection("users")
+        .where("allowedStores", "array-contains", parseInt(store))
+        .get();
+    }
+    
+    if (usersSnapshot.empty) {
+      logger.info(`No users found with allowedStores containing ${store} (number). Trying string...`);
+      usersSnapshot = await db.collection("users")
+        .where("allowedStores", "array-contains", String(store))
+        .get();
+    }
+    
+    if (usersSnapshot.empty) {
+      logger.info(`No users found for store ${store}`);
+      return;
+    }
+    
+    logger.info(`Found ${usersSnapshot.docs.length} users for store ${store}, checking for FCM tokens...`);
+    
+    // Create notification payload
+    const actualScanId = scanId || `test-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const timestamp = Date.now();
+    
+    const notificationData = {
+      scanId: actualScanId,
+      storeNumber: store,
+      areaDescription: area,
+      timestamp: timestamp.toString(),
+      title: "🚨 Customer Needs Assistance",
+      body: `Store ${store}: Customer needs help in ${area}`
+    };
+    
+    // Skip scan document creation if scanId was provided (already created in main function)
+    if (!scanId) {
+      await db.collection("scans").doc(actualScanId).set({
+        scanId: actualScanId,
+        storeNumber: store,
+        areaDescription: area,
+        timestamp: FieldValue.serverTimestamp(),
+        timestampMs: timestamp,
+        status: "pending",
+        responses: [],
+        claimedBy: null,
+        claimedByName: null,
+        claimedAt: null
+      });
+    }
+    
+    // Send notification to each user with FCM token
+    const tokens = [];
+    const validUsers = [];
+    
+    for (const userDoc of usersSnapshot.docs) {
+      const userData = userDoc.data();
+      if (userData.fcmToken && userData.fcmToken.length > 10) {
+        tokens.push(userData.fcmToken);
+        validUsers.push({
+          uid: userDoc.id,
+          name: userData.firstName || userData.fullName || "Unknown",
+          token: userData.fcmToken
+        });
+      }
+    }
+    
+    if (tokens.length === 0) {
+      logger.info(`No valid FCM tokens found for store ${store}`);
+      return;
+    }
+    
+    logger.info(`Found ${tokens.length} FCM tokens for store ${store}`);
+    
+    // Send to each token individually (more reliable than multicast)
+    let successCount = 0;
+    
+    for (const token of tokens) {
+      try {
+        const message = {
+          data: notificationData,
+          android: {
+            priority: "high"
+          },
+          token: token
+        };
+        
+        await getMessaging().send(message);
+        successCount++;
+        logger.info(`FCM sent successfully to token ${token.substring(0, 20)}...`);
+      } catch (error) {
+        logger.error(`Failed to send FCM to token ${token.substring(0, 20)}...`, error);
+      }
+    }
+    
+    logger.info("Android FCM notification completed", {
+      store,
+      area,
+      scanId,
+      totalTokens: tokens.length,
+      successCount: successCount,
+      failureCount: tokens.length - successCount
+    });
+    
+  } catch (e) {
+    logger.error("Android FCM notification error:", e.message);
+  }
+}
+
+// ===== Debug: Update user FCM token =====
+export const updateUserToken = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const newToken = req.query.token;
+    
+    if (!userId || !newToken) {
+      return res.status(400).json({ error: "userId and token parameters required" });
+    }
+
+    // Get current user document
+    const userDoc = await db.collection("users").doc(userId).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userData = userDoc.data();
+    const oldToken = userData.fcmToken;
+    
+    // Update FCM token
+    await db.collection("users").doc(userId).update({
+      fcmToken: newToken,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+
+    logger.info("FCM token updated", {
+      userId,
+      oldToken: oldToken ? oldToken.substring(0, 20) + "..." : "none",
+      newToken: newToken.substring(0, 20) + "...",
+      email: userData.email
+    });
+    
+    return res.json({
+      success: true,
+      userId: userId,
+      email: userData.email,
+      storeNumber: userData.storeNumber,
+      oldToken: oldToken ? oldToken.substring(0, 20) + "..." : "none",
+      newToken: newToken.substring(0, 20) + "...",
+      message: "FCM token updated successfully"
+    });
+
+  } catch (error) {
+    logger.error("Error updating user token:", error);
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 // ===== Admin: Get blocked IPs list =====
 export const getBlockedIPs = onRequest({
@@ -3400,6 +3696,148 @@ export const groupmeAdminDeleteAnyBot = onRequest({
     
   } catch (error) {
     logger.error("Admin delete any bot error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin User Management Functions =====
+
+// Get detailed user data including work schedule
+export const adminGetUserDetails = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { user_id } = req.query;
+    if (!user_id) return res.status(400).send("Missing user_id");
+    
+    logger.info("Admin getting user details", { user_id, admin: decodedToken.uid });
+    
+    // Get user document from Firestore
+    const userDoc = await db.collection("users").doc(user_id).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).send("User not found");
+    }
+    
+    const userData = userDoc.data();
+    
+    // Return sanitized user data
+    const userDetails = {
+      id: user_id,
+      firstName: userData.firstName || '',
+      lastName: userData.lastName || '',
+      email: userData.email || '',
+      storeNumber: userData.storeNumber || '',
+      jobTitle: userData.jobTitle || '',
+      role: userData.role || 'user',
+      notificationsEnabled: userData.notificationsEnabled !== false,
+      respectDoNotDisturb: userData.respectDoNotDisturb !== false,
+      workSchedule: userData.workSchedule || null,
+      createdAt: userData.createdAt,
+      updatedAt: userData.updatedAt
+    };
+    
+    logger.info("User details retrieved", { user_id, has_schedule: !!userData.workSchedule });
+    
+    res.json(userDetails);
+    
+  } catch (error) {
+    logger.error("Admin get user details error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// Update user data
+export const adminUpdateUser = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { user_id, updates } = req.body;
+    if (!user_id || !updates) return res.status(400).send("Missing user_id or updates");
+    
+    logger.info("Admin updating user", { 
+      user_id, 
+      admin: decodedToken.uid,
+      update_fields: Object.keys(updates)
+    });
+    
+    // Validate update fields
+    const allowedFields = [
+      'firstName', 'lastName', 'email', 'storeNumber', 'jobTitle', 
+      'role', 'notificationsEnabled', 'respectDoNotDisturb', 'workSchedule'
+    ];
+    
+    const updateData = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (allowedFields.includes(key)) {
+        updateData[key] = value;
+      }
+    }
+    
+    // Add admin update metadata
+    updateData.updatedAt = FieldValue.serverTimestamp();
+    updateData.updatedBy = decodedToken.uid;
+    
+    // Get user document reference
+    const userRef = db.collection("users").doc(user_id);
+    
+    // Check if user exists
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      return res.status(404).send("User not found");
+    }
+    
+    // Update user document
+    await userRef.update(updateData);
+    
+    logger.info("User updated successfully", { 
+      user_id, 
+      admin: decodedToken.uid,
+      updated_fields: Object.keys(updateData)
+    });
+    
+    res.json({ 
+      success: true, 
+      message: "User updated successfully",
+      updated_fields: Object.keys(updateData)
+    });
+    
+  } catch (error) {
+    logger.error("Admin update user error:", error);
     res.status(500).send("Internal server error: " + error.message);
   }
 });

@@ -29,6 +29,20 @@
       ]
     },
     {
+      "collectionGroup": "logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "respondedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "support_tickets",
       "queryScope": "COLLECTION",
       "fields": [
@@ -43,22 +57,30 @@
       ]
     },
     {
-      "collectionGroup": "support_tickets",
+      "collectionGroup": "users",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "ticketId",
+          "fieldPath": "storeNumber",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "fcmToken",
           "order": "ASCENDING"
         }
       ]
     },
     {
-      "collectionGroup": "groupme_bots",
+      "collectionGroup": "scans",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "store",
+          "fieldPath": "storeNumber",
           "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
         }
       ]
     }

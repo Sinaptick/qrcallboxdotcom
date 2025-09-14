@@ -7,6 +7,12 @@ service cloud.firestore {
       // Allow users to update their own pending changes
       allow update: if request.auth != null && request.auth.uid == userId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingChanges']);
+      // Allow users to update their own FCM token
+      allow update: if request.auth != null && request.auth.uid == userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken']);
+      // Allow users to update FCM token with timestamp
+      allow update: if request.auth != null && request.auth.uid == userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken', 'fcmTokenUpdatedAt']);
       // Allow admins to read all user documents
       allow read: if request.auth != null && 
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -91,6 +97,37 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
       // Only Functions can write via Admin SDK
       allow write: if false;
+    }
+
+    // Scans collection - users can read scans for their store and claim assistance
+    match /scans/{scanId} {
+      // Helper function to get user store number as string
+      function getUserStore() {
+        let userStore = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.storeNumber;
+        return userStore is string ? userStore : string(userStore);
+      }
+      
+      // Helper function to get scan store number as string
+      function getScanStore() {
+        let scanStore = resource.data.storeNumber;
+        return scanStore is string ? scanStore : string(scanStore);
+      }
+      
+      // Users can read scans for their own store number
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (getScanStore() == getUserStore() || 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com');
+      
+      // Users can update scans to claim assistance (set claimedBy, claimedByName, claimedAt)
+      allow update: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getScanStore() == getUserStore() &&
+        // Only allow updating claim-related and response fields
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy', 'claimedByName', 'claimedAt', 'status', 'responses']);
+      
+      // Only Functions can create scans via Admin SDK
+      allow create: if false;
     }
 
     // Deny all other access
