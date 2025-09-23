@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- QRCallBox Backup Rules - Security Configuration -->
+<full-backup-content>
+    <!-- Include general app data -->
+    <include domain="sharedpref" path="."/>
+    <include domain="database" path="."/>
+    <include domain="file" path="."/>
+    
+    <!-- Exclude sensitive data from backups -->
+    <exclude domain="sharedpref" path="fcm_token.xml"/>
+    <exclude domain="sharedpref" path="user_credentials.xml"/>
+    <exclude domain="sharedpref" path="auth_tokens.xml"/>
+    <exclude domain="sharedpref" path="app_updates.xml"/>
+    
+    <!-- Exclude temporary files -->
+    <exclude domain="file" path="cache/"/>
+    <exclude domain="file" path="temp/"/>
+    <exclude domain="file" path="downloads/"/>
+    
+    <!-- Exclude any logs that might contain sensitive data -->
+    <exclude domain="file" path="logs/"/>
+</full-backup-content>

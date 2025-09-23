@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "611687644130",
+    "project_id": "qrwebaccdb",
+    "storage_bucket": "qrwebaccdb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:611687644130:android:36eda1c96300907ee397bb",
+        "android_client_info": {
+          "package_name": "com.stable.qrcallbox"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBxaLpsCeZGcCrJUYL67FeATNUOBDMMR_Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

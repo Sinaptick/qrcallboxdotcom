@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<svg width="128" height="128" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Blue message bubble background -->
+  <path d="m2.92,2c-1.06,0 -1.92,0.9 -1.92,2l0,14c0,1.1 0.86,2 1.92,2l1.8,0.13l-3.48,3.75l9.72,-3.63l9.24,-0.25c1.06,0 1.92,-0.9 1.92,-2l0,-14c0,-1.1 -0.86,-2 -1.92,-2l-17.28,0z" fill="#4F46E5"/>
+  
+  <!-- QR positioning squares -->
+  <g fill="none" stroke="white" stroke-width="1.5">
+    <rect x="5" y="5" width="5" height="5"/>
+    <rect x="13" y="5" width="5" height="5"/>
+    <rect x="5" y="12.81" width="5" height="5"/>
+  </g>
+  
+  <!-- Key icon -->
+  <g fill="white">
+    <circle cx="1" cy="1" r="1.2" fill="none" stroke="white" stroke-width="0.8" transform="matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"/>
+    <rect x="1.8" y="0.7" width="2.5" height="0.6" transform="translate(15.0319 14.7312) scale(1.23625 1.22975) translate(-15.0319 -14.7312) matrix(1.04269 0.941647 -1.06267 0.959696 14.5678 12.3956)"/>
+    <rect x="18.63" y="1" width="0.3" height="0.8" transform="matrix(1.30858 1.17965 -1.33366 1.20226 -3.72808 -6.43413)"/>
+    <rect x="18" y="16.4" width="0.65" height="0.43" transform="rotate(135 18.3273 16.6163)"/>
+  </g>
+</svg>

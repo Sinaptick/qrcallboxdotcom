@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Production configuration -->
+    <domain-config cleartextTrafficPermitted="false">
+        <!-- Firebase domains -->
+        <domain includeSubdomains="true">firebase.googleapis.com</domain>
+        <domain includeSubdomains="true">firebaseio.com</domain>
+        <domain includeSubdomains="true">googleapis.com</domain>
+        <domain includeSubdomains="true">firebaseapp.com</domain>
+        
+        <!-- QRCall domains -->
+        <domain includeSubdomains="true">qrwebaccdb.web.app</domain>
+        <domain includeSubdomains="true">qrwebaccdb.firebaseapp.com</domain>
+        <domain includeSubdomains="true">us-central1-qrwebaccdb.cloudfunctions.net</domain>
+        
+        <!-- Certificate pinning temporarily disabled for Firebase compatibility -->
+        <!-- TODO: Update certificate pins for Firebase domains -->
+        <!--
+        <pin-set expiration="2026-01-01">
+            <pin digest="SHA-256">JSMzqOOrtyOT1kmau6zKhgT676hGgczD5VMdRMyJZFA=</pin>
+            <pin digest="SHA-256">KwccWaCgrnaw6tsrrSO61FgLacNgG2MMLq8GE6+oP5I=</pin>
+            <pin digest="SHA-256">FEzVOUp4dF3gI0ZVPRJhFbSD608T5Pm4/jJ5ucFdei8=</pin>
+        </pin-set>
+        -->
+        
+        <!-- Trust anchor configuration -->
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </domain-config>
+    
+    <!-- Debug configuration for localhost -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain> <!-- Android emulator -->
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+    
+    <!-- Base configuration -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>
