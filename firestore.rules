@@ -3,22 +3,25 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Users collection - users can only read/write their own profile
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-      // Allow users to update their own pending changes
-      allow update: if request.auth != null && request.auth.uid == userId &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingChanges']);
-      // Allow users to update their own FCM token
-      allow update: if request.auth != null && request.auth.uid == userId &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken']);
-      // Allow users to update FCM token with timestamp
-      allow update: if request.auth != null && request.auth.uid == userId &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken', 'fcmTokenUpdatedAt']);
+      // Allow users to read their own document
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Allow users to create their own document (for TOS acceptance on first login)
+      allow create: if request.auth != null && request.auth.uid == userId;
+
+      // Allow users to update their own document (for TOS acceptance, FCM tokens, etc.)
+      allow update: if request.auth != null && request.auth.uid == userId;
+
+      // Allow users to delete their own document
+      allow delete: if request.auth != null && request.auth.uid == userId;
+
       // Allow admins to read all user documents
-      allow read: if request.auth != null && 
+      allow read: if request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
-      // Allow admins to update approval status and approve pending changes
-      allow update: if request.auth != null && 
+
+      // Allow admins to update any user document
+      allow update: if request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
     }
@@ -97,6 +100,35 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
       // Only Functions can write via Admin SDK
       allow write: if false;
+    }
+
+    // Directory collection - authenticated users can read to verify access
+    match /directory/{personId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin via functions
+    }
+
+    // Tasks collection - for APTasks calendar
+    match /tasks/{taskId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+
+      // Task links subcollection
+      match /links/{linkId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      }
+
+      // Audit log - append-only
+      match /audit/{eventId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+        allow update, delete: if false;
+      }
     }
 
     // Scans collection - users can read scans for their store and claim assistance

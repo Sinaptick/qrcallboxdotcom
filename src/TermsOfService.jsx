@@ -8,6 +8,8 @@ export default function TermsOfService({ user, onAccept, onDecline }) {
   const [loading, setLoading] = useState(true);
   const [showFullTerms, setShowFullTerms] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     checkUserAgreement();
@@ -30,11 +32,18 @@ export default function TermsOfService({ user, onAccept, onDecline }) {
   };
 
   const handleAccept = async () => {
+    if (accepting) return; // Prevent double-clicks
+
+    setAccepting(true);
+    setError(null);
+
     try {
+      console.log("Accepting terms for user:", user.uid);
       const userRef = doc(db, "users", user.uid);
       const userDoc = await getDoc(userRef);
-      
+
       if (userDoc.exists()) {
+        console.log("Updating existing user document");
         await updateDoc(userRef, {
           termsAccepted: true,
           termsAcceptedAt: new Date(),
@@ -42,6 +51,7 @@ export default function TermsOfService({ user, onAccept, onDecline }) {
           ipAddress: await fetchUserIP()
         });
       } else {
+        console.log("Creating new user document");
         await setDoc(userRef, {
           uid: user.uid,
           email: user.email,
@@ -52,11 +62,20 @@ export default function TermsOfService({ user, onAccept, onDecline }) {
           createdAt: new Date()
         });
       }
-      
+
+      console.log("Terms accepted successfully");
       setHasAgreed(true);
-      if (onAccept) onAccept();
+
+      if (onAccept) {
+        console.log("Calling onAccept callback");
+        onAccept();
+      } else {
+        console.warn("No onAccept callback provided");
+      }
     } catch (error) {
       console.error("Error accepting ToS:", error);
+      setError(error.message || "Failed to accept terms. Please try again.");
+      setAccepting(false);
     }
   };
 
@@ -233,34 +252,54 @@ export default function TermsOfService({ user, onAccept, onDecline }) {
         </div>
 
         <div className="p-6 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+          {error && (
+            <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg">
+              <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <div className="flex gap-4">
               <button
                 onClick={() => setShowFullTerms(!showFullTerms)}
                 className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                disabled={accepting}
               >
                 {showFullTerms ? "Hide" : "Show"} additional terms
               </button>
               <button
                 onClick={() => setShowPrivacyPolicy(true)}
                 className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                disabled={accepting}
               >
                 📋 View Privacy Policy
               </button>
             </div>
-            
+
             <div className="flex gap-3">
               <button
                 onClick={onDecline}
-                className="px-6 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                disabled={accepting}
+                className="px-6 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Decline
               </button>
               <button
                 onClick={handleAccept}
-                className="px-6 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                disabled={accepting}
+                className="px-6 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                I Accept the Terms
+                {accepting ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Accepting...
+                  </>
+                ) : (
+                  "I Accept the Terms"
+                )}
               </button>
             </div>
           </div>
