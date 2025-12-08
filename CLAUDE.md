@@ -1,4 +1,21 @@
+
 # QRCall System - Claude Development Guide
+
+## ⚠️ CRITICAL: Data Schema Consistency
+
+**BEFORE modifying any data structures, READ THIS:**
+
+📋 **[DATA_SCHEMA.md](/docs/DATA_SCHEMA.md)** - Canonical reference for ALL field names and types
+
+This project has **THREE platforms** (Web, Android, Backend) that MUST use identical field names. Always:
+1. ✅ Check DATA_SCHEMA.md before adding/changing fields
+2. ✅ Update ALL platforms simultaneously
+3. ✅ Update DATA_SCHEMA.md with changes
+4. ✅ Test cross-platform data flow
+
+**Recent Bug Example (Fixed Dec 2025)**: TopResponders and Dashboard now query `scans` collection (not `logs`) using `claimedByName`, `claimedAt`, and `timestamp` fields. The `logs` collection is for activity tracking, NOT response analytics.
+
+---
 
 ## Project Overview
 QRCall is a comprehensive QR code management system for retail stores with multi-platform real-time notifications. The system allows stores to generate QR codes for customer callbacks and automatically notifies store employees via GroupMe, Workvivo, and native Android app notifications when customers scan the codes.
@@ -34,7 +51,7 @@ QRCall is a comprehensive QR code management system for retail stores with multi
   - **Workvivo Functions**: Enterprise integration
 
 ### Android App Structure (`/Users/shanesmith/AndroidStudioProjects/QRCallBox/`)
-- **Version**: 1.7.2 (Latest with auto-update system)
+- **Version: 1.8.11 (Latest production version)
 - **Target SDK**: Android 14 (API 36), Min SDK: Android 7.0 (API 24)
 - **Architecture**: MVVM with Firebase integration
 
@@ -276,7 +293,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 #### Android Version Management
 - **Semantic Versioning**: 1.7.x format (major.minor.patch)
-- **Version Code**: Integer increment for each build (currently 19)
+- **Version Code: Integer increment for each build (currently 63)
 - **Auto-Update System**: Checks `https://us-central1-qrwebaccdb.cloudfunctions.net/getAppVersion`
 - **Distribution**: APKs hosted at `https://qrwebaccdb.web.app/app/`
 
@@ -432,7 +449,7 @@ execute_adb_command("start-server")
 - **Elapsed Timer Display**: Shows how long customers have been waiting
 - **Real-time Updates**: Firestore snapshot listeners for instant scan list updates
 
-#### Android App Features (Current: v1.7.2)
+#### Android App Features (Current: v1.8.8)
 
 ##### Core Functionality:
 - **Recent Customer Requests**: Real-time display of pending assistance requests
@@ -462,7 +479,17 @@ execute_adb_command("start-server")
 3. **Bot Creation**: Admin can create bots for users or themselves
 4. **QR Notifications**: Bots send messages when QR codes are scanned
 
-### Admin Capabilities
+### Admin Panel Tabs
+The Admin panel includes the following sections:
+- **Overview**: Quick system status, unapproved users, pending profile changes
+- **Support Tickets**: View and respond to user support tickets
+- **User Management**: Search, edit, and manage all users across stores
+- **GroupMe Bots**: Manage GroupMe bot integrations, store lookup, bot creation
+- **QR Locations**: View all QR areas per store, delete test/erroneous data
+- **Spam Protection**: Manage blocked IPs
+- **Data Cleanup**: Response tracking diagnostic, GroupMe backfill tools
+
+### GroupMe Admin Capabilities
 - **Store Lookup**: Find all users by store number
 - **Bot Creation**: Create bots for other users or multiple bots for admin
 - **Bot Overview**: View all bots with expandable details (group info, members, recent messages)
@@ -477,15 +504,16 @@ All GroupMe admin endpoints follow: `/api/groupme/admin-[action]`
 - `admin-create-bot-for-self` - Create bot under admin account
 
 ### Android App Distribution & Updates
-- **Current Version**: v1.7.2 (Enhanced Auto-Update System)
+- **Current Version: 1.8.11 (Latest production version)
 - **Download Page**: `https://qrwebaccdb.web.app/app/`
-- **Latest APK**: `https://qrwebaccdb.web.app/app/QRCallBox-debug-v1.7.2.apk`
+- **Latest APK**: `https://qrwebaccdb.web.app/app/QRCallBox-debug-v1.8.11.apk`
 - **Local Build Path**: `/Users/shanesmith/AndroidStudioProjects/QRCallBox/app/build/outputs/apk/debug/app-debug.apk`
 - **Version API**: `https://us-central1-qrwebaccdb.cloudfunctions.net/getAppVersion`
 
 #### Release History:
+- **v1.8.11**: Latest production version
 - **v1.7.2**: Enhanced auto-update debug logging
-- **v1.7.1**: Auto-update system implementation  
+- **v1.7.1**: Auto-update system implementation
 - **v1.7.0**: Assist buttons, real-time updates, race condition protection
 - **v1.6.0**: Auto-save settings, UI improvements
 - **v1.5.0**: Recent Customer Requests feature
@@ -497,6 +525,123 @@ All GroupMe admin endpoints follow: `/api/groupme/admin-[action]`
 - **Version Info**: Current version and update check status
 - **Detailed Logging**: Comprehensive debug logs for all major operations
 - **Test Notifications**: Built-in test system for development
+
+## Multi-Device Notifications
+
+### System Overview (As of October 2025)
+
+**✅ IMPLEMENTED**: Users can now receive notifications on **multiple devices simultaneously**!
+
+**How It Works**:
+- Each user's Firestore document now has a `fcmTokens` array (replaces single `fcmToken`)
+- Array stores multiple device tokens with metadata:
+  ```javascript
+  fcmTokens: [
+    {
+      token: "eXJPYP...",  // FCM registration token
+      platform: "android",  // or "ios"
+      deviceName: "Pixel 7", // Device model
+      deviceInfo: "Google Pixel 7 (Android 14)",
+      addedAt: Timestamp,
+      lastSeen: Timestamp,
+      appVersion: "1.8.11",
+      appVersionCode: 19
+    },
+    {
+      token: "eWDsw8...",
+      platform: "ios",
+      deviceName: "iPad",
+      // ... etc
+    }
+  ]
+  ```
+- Backend sends notifications to **ALL devices** in the array
+- Old `fcmToken` field maintained for backward compatibility
+
+**User Experience**:
+- Log in on Android → device registered in array
+- Log in on iPad → second device added to array (doesn't overwrite!)
+- QR scan occurs → **BOTH devices receive notification simultaneously**
+
+**Files Modified**:
+- `apple/lib/services/auth_service.dart` - iOS multi-device token storage
+- `app/src/main/java/.../ui/MainActivity.kt` - Android multi-device token storage
+- `functions/index.js` - Backend sends to all user devices
+
+**Verification Script**:
+```bash
+node verify_multi_device.cjs  # Check user's registered devices
+```
+
+## Multi-Store Access & Notifications
+
+### Current Limitation (As of 2025-01-11)
+
+**Backend Notification Targeting**:
+- Currently ONLY notifies users whose `storeNumber` matches the scan's store
+- `allowedStores` array is managed in admin panel but NOT used for notifications
+- This prevents "ghost notifications" where users receive alerts but can't see scans
+
+**Why This Limitation Exists**:
+```
+Backend checks: activeStore or storeNumber
+Android app shows: scans from storeNumber only
+
+Problem: If we notify based on allowedStores, users get notifications
+for scans they can't see in the app → "ghost notifications"
+```
+
+**Current Behavior for Multi-Store Users**:
+- Market managers with `allowedStores: [1234, 5678, 9012]` only receive notifications when `storeNumber` matches
+- They can view/edit their allowed stores in admin panel
+- They CANNOT switch stores or receive notifications from non-primary stores
+
+### Planned Solution: Store Switching Feature
+
+**See**: `/docs/STORE_SWITCHING_IMPLEMENTATION.md` for full design
+
+**Overview**:
+1. Add `activeStore` field to user profile (Firestore)
+2. Android app gets store selector dropdown in app bar
+3. Users select which store they're currently monitoring
+4. Backend sends notifications based on `activeStore` instead of `storeNumber`
+5. App queries scans for `activeStore` instead of `storeNumber`
+
+**Benefits**:
+- Market managers can monitor any allowed store
+- No ghost notifications
+- Single app instance for all stores
+- Per-store notification preferences
+- Clear store switching UI
+
+**Implementation Status**: Designed, ready for development
+
+### Managing Multi-Store Users (Admin)
+
+**Web Admin Panel** (`/admin/user-management`):
+1. Search for user by name, email, or store number
+2. Click "Edit User" on user profile
+3. Fields available:
+   - **Store Number**: Primary store (always required)
+   - **Allowed Stores**: Comma-separated list (e.g., "1234, 5678, 9012")
+   - **Home Store**: Legacy field for backward compatibility
+   - **Approved**: Must be "Yes" for user to access system
+4. Save changes
+
+**Database Fields**:
+```javascript
+users: {
+  storeNumber: 1234,              // Primary store (notifications sent here)
+  allowedStores: [1234, 5678, 9012],  // Stores user can access (web panel only)
+  homeStore: 1234,                // Legacy field
+  activeStore: null,              // Future: Selected monitoring store
+}
+```
+
+**Important Notes**:
+- Changing `allowedStores` in admin panel does NOT change notification behavior yet
+- Users will only receive Android notifications for their `storeNumber` until store switching is implemented
+- Web panel GroupMe/Workvivo notifications still use `allowedStores` for targeting
 
 ## Important Patterns & Conventions
 
@@ -549,10 +694,138 @@ All GroupMe admin endpoints follow: `/api/groupme/admin-[action]`
 - Test security rules thoroughly before production deployment
 
 ## Security Notes
+
+### Web & Backend Security
 - Admin-only endpoints verify user permissions
 - Rate limiting prevents abuse
 - GroupMe tokens stored securely in Firestore
 - CORS restricted to allowed origins only
+
+### iOS/Flutter App
+
+#### Overview
+- **Current Version**: v1.8.1+2
+- **Platform**: Flutter (iOS 13.0+ / iPadOS 13.0+)
+- **Project Location**: `/Users/shanesmith/Documents/qrcall/apple/`
+- **Status**: Development - Security hardening complete, deployment pending
+
+#### Key Features
+- **Authentication**: Google Sign-In, Apple Sign-In, email/password
+- **Real-Time Dashboard**: StreamBuilder with Firestore snapshots for live request updates
+- **Request Management**: Assist/Ignore buttons with race condition protection
+- **Dark Mode**: System default, light, or dark theme with persistence
+- **Admin Panel**: Active Associates view, all users directory (permission-based)
+- **Work Schedule**: Set hours for each day with automatic shift detection
+- **Push Notifications**: FCM integration (physical devices only, not simulators)
+- **Profile Management**: User data display with debug information
+
+#### Tech Stack
+- **Framework**: Flutter 3.35.5+ (stable channel)
+- **State Management**: Provider pattern
+- **UI**: Material Design 3 with Cupertino widgets
+- **Backend**: Firebase (Auth, Firestore, FCM, Analytics)
+- **Authentication**: firebase_auth, google_sign_in, sign_in_with_apple
+- **Local Storage**: shared_preferences
+
+#### Development Commands
+```bash
+# Navigate to iOS project
+cd /Users/shanesmith/Documents/qrcall/apple
+
+# Get dependencies
+flutter pub get
+
+# Run on simulator or device
+flutter run
+flutter run -d [DEVICE_ID]
+
+# List available devices
+flutter devices
+
+# Hot reload (while running): press 'r'
+# Hot restart (while running): press 'R'
+
+# Build release (via Xcode)
+# 1. Open ios/Runner.xcworkspace in Xcode
+# 2. Product → Archive
+# 3. Distribute to App Store Connect
+
+# Clean build
+flutter clean && flutter pub get
+```
+
+#### Project Structure
+```
+apple/
+├── lib/
+│   ├── main.dart                    # App entry point
+│   ├── models/                      # Data models (scan_model, user_model)
+│   ├── screens/                     # UI screens (home, login, settings, profile, admin)
+│   ├── services/                    # Backend services (auth, firestore, fcm)
+│   ├── providers/                   # State management (theme_provider)
+│   └── widgets/                     # Reusable components (scan_list_item)
+├── ios/
+│   ├── Runner/
+│   │   ├── GoogleService-Info.plist # Firebase iOS config
+│   │   └── Info.plist              # App metadata & permissions
+│   └── Podfile                     # CocoaPods dependencies
+└── pubspec.yaml                     # Flutter dependencies
+```
+
+#### Security Status (January 2025)
+> **📋 IMPORTANT**: iOS app has undergone comprehensive security hardening
+>
+> **See detailed audit**: [`apple/SECURITY_UPDATES.md`](apple/SECURITY_UPDATES.md)
+
+**✅ Completed Client-Side Improvements**:
+- Sensitive logging protection (kDebugMode checks)
+- iOS privacy permissions compliance
+- Input validation & sanitization (all Firestore writes)
+- Strong password enforcement (12+ chars, complexity requirements)
+- FCM notification payload validation
+
+**✅ Completed Server-Side Implementations** (awaiting deployment):
+- Firebase Custom Claims for admin authorization (`setAdminClaim` function)
+- Scheduled auto-ignore function (runs every 5 minutes)
+- Updated Firestore security rules to use Custom Claims
+- Manual auto-ignore trigger for admin testing
+
+**⏳ Pending Tasks**:
+- Deploy backend security updates (see `DEPLOYMENT_SECURITY.md`)
+- Enable Firebase App Check (recommended for production)
+- Test security updates in production environment
+
+#### Known Limitations
+- **APNS Simulators**: iOS simulators don't support push notifications (physical device required)
+- **No Offline Mode**: Requires network connectivity for all operations
+- **15-Minute Claimed Display**: Claimed requests auto-filter after 15 minutes
+- **No Request History**: Only shows current active requests (last 24 hours)
+
+#### Testing Workflow
+**iOS Simulator** (✅ Most features work):
+- Authentication flows (Google, Apple, email/password)
+- Real-time request list updates
+- Assist/Ignore functionality
+- Dark mode switching
+- Admin panel (with admin account)
+- Profile screen
+
+**Physical Device Required For**:
+- Push notification delivery
+- Background notification handling
+- APNS token registration
+- Notification action buttons (future)
+
+#### Distribution
+- **TestFlight**: See `apple/TESTFLIGHT_SETUP.md` for guide
+- **App Store**: Not yet submitted
+- **Internal Testing**: Use `flutter run -d [DEVICE_ID]` for direct installation
+
+#### Documentation
+- iOS development guide: `apple/APPLECLAUDE.md`
+- Security audit: `apple/SECURITY_UPDATES.md`
+- TestFlight setup: `apple/TESTFLIGHT_SETUP.md`
+- Flutter README: `apple/README_FLUTTER.md`
 
 ## Performance Optimizations
 - Component memoization with React.memo
@@ -586,12 +859,12 @@ All GroupMe admin endpoints follow: `/api/groupme/admin-[action]`
 
 ### Phase 2 (Jan 11, 2025): Advanced Features
 - **14 development hours** in single day intensive session
-- Android app v1.7.0-1.7.2: Assist buttons, real-time updates, auto-update system
+- Android app v1.7.0-1.8.8: Assist buttons, real-time updates, auto-update system, production release
 - Race condition protection, enhanced debugging, comprehensive documentation
 
 ### Current Status (Jan 11, 2025)
 - **Total Investment**: 60+ development hours
-- **Android App**: v1.7.2 with feature-complete functionality
+- **Android App**: v1.8.8 production release
 - **Web Platform**: Full GroupMe/Workvivo integration with admin tools
 - **Documentation**: Comprehensive developer guides and user documentation
 - **Deployment**: Automated CI/CD pipeline with auto-update system

@@ -447,3 +447,55 @@
 **Document Version:** 1.2  
 **Last Updated:** September 2, 2025  
 **Next Update:** After next development session
+---
+
+### Session 11: December Admin & Dashboard Improvements
+**Date:** December 8, 2025  
+**Duration:** 2 hours (estimated)  
+**Status:** Completed ✅
+
+**Major Accomplishments:**
+
+1. **QR Locations Admin Tab:**
+   - Created new QRLocations.jsx component for admin panel
+   - Shows all QR areas/locations per store with scan counts
+   - Displays data from scans, qr_tokens, and logs collections
+   - Added bulk delete functionality for cleaning test data
+   - Double-confirmation safety for deletions (type "DELETE {area}")
+   - Added QR Locations tab to AdminPanel navigation
+
+2. **Setup Page Overhaul:**
+   - Complete rewrite of Setup.jsx with comprehensive onboarding guide
+   - Added collapsible sections for each setup step
+   - Documented Android app installation and setup
+   - Added "Understanding the Tabs" section explaining each feature
+   - Included Pro Tips and Quick Start checklist
+   - Improved mobile responsiveness
+
+3. **Dashboard & Top Responders Fixes:**
+   - Fixed Top Responders querying wrong collection (logs → scans)
+   - Changed field references: responderName → claimedByName, respondedAt → claimedAt
+   - Fixed Dashboard stats to use scans collection instead of logs
+   - Added dynamic date to Dashboard header ("Dashboard - Monday December 8th")
+   - Changed default time period from 'daily' to 'weekly'
+   - Added console logging for debugging data flow
+
+**Files Created:**
+- `src/components/admin/QRLocations.jsx` (310 lines)
+
+**Files Modified:**
+- `src/components/admin/AdminPanel.jsx` - Added QRLocations import and tab
+- `src/Setup.jsx` - Complete rewrite with onboarding guide
+- `src/app.jsx` - Fixed Dashboard and TopResponders to use scans collection
+
+**Bug Fixes:**
+- Top Responders showing no data (wrong collection query)
+- Dashboard daily stats potentially showing old data
+- Improved timestamp handling for cross-timezone support
+
+**Impact:**
+- Admin can now easily clean up test/erroneous area data
+- New users have clear onboarding path
+- Dashboard and analytics now show accurate data from scans collection
+- Consistent data source across Dashboard and Top Responders
+

@@ -4,6 +4,7 @@ import Heatmap from "./Heatmap.jsx";
 import * as QR from "qrcode";
 import { mint } from "./lib/api.js";
 import PosterWithQR from "./PosterWithQR.jsx";
+import { initializeApp, getApps } from "firebase/app";
 import UnapprovedUsersList from "./UnapprovedUsersList.jsx";
 import InsightsAI from "./InsightsAI.jsx";
 import GroupMeSetup from "./GroupMeSetup.jsx";
@@ -14,20 +15,9 @@ import MyTickets from "./MyTickets.jsx";
 import Setup from "./Setup.jsx";
 import BlockedIPsManager from "./BlockedIPsManager.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
-import { Card, CardHeader, CardBody } from "./components/shared/Card.jsx";
-import { Input } from "./components/shared/FormField.jsx";
-import { Tabs } from "./components/ui/Tabs.jsx";
-import FilterControls from "./components/dashboard/FilterControls.jsx";
-import TabContent from "./components/dashboard/TabContent.jsx";
-import { useInsightsData } from "./hooks/useInsightsData.js";
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
 import QRLockIcon from "./QRLockIcon.jsx";
 import TermsOfService from "./TermsOfService.jsx";
-
-// New modular imports
-import { useFirebase } from "./hooks/useFirebase.js";
-import ErrorBoundary from "./components/shared/ErrorBoundary.jsx";
-import LandingPage from "./components/layout/LandingPage.jsx";
 import {
   getAuth,
   onAuthStateChanged,
@@ -43,24 +33,126 @@ import {
   setDoc,
   serverTimestamp,
 } from "firebase/firestore";
-import {
-  storeHierarchy,
-  getAllStoresForSelection,
-  getSelectionDisplayName,
-  getBUOptions,
-  getRegionOptions,
-  getMarketOptions,
-  validateStoreAccess
-} from "./storeHierarchy.js";
 
-// ErrorBoundary now imported from components/shared/ErrorBoundary.jsx
+// -----------------------------
+// 🧯 Error Boundary
+// -----------------------------
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    this.setState({ error, errorInfo });
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center bg-red-50 p-8">
+          <h1 className="text-2xl font-bold text-red-700 mb-2">Something went wrong.</h1>
+          <pre className="bg-white p-4 rounded-xl border border-red-200 text-red-800 text-sm overflow-auto max-w-xl w-full">
+            {this.state.error && this.state.error.toString()}
+            {this.state.errorInfo && this.state.errorInfo.componentStack}
+          </pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
-// Firebase configuration now in config/firebase.config.js
-// useFirebase hook now in hooks/useFirebase.js
+// -----------------------------
+// Firebase Setup
+// -----------------------------
+const firebaseConfig = {
+  apiKey: "AIzaSyCbpXuSt3UHAWtAfiKbVx621vwpL5cKnkA",
+  authDomain: "qrwebaccdb.firebaseapp.com",
+  projectId: "qrwebaccdb",
+  storageBucket: "qrwebaccdb.appspot.com",
+  messagingSenderId: "611687644130",
+  appId: "1:611687644130:web:3f4011c00e1baae1e397bb",
+  measurementId: "G-JXF9XEFCD4",
+};
+
+export function useFirebase() {
+  const app = useMemo(
+    () => (getApps().length ? getApps()[0] : initializeApp(firebaseConfig)),
+    []
+  );
+  const auth = useMemo(() => getAuth(app), [app]);
+  const db = useMemo(() => getFirestore(app), [app]);
+  return { app, auth, db };
+}
 
 // -----------------------------
 // 🧱 UI Primitives (Tailwind)
 // -----------------------------
+function Card({ children, className = "" }) {
+  return (
+    <div className={`bg-secondary rounded-2xl shadow-sm ring-1 ring-black/5 border border-themed ${className}`}>
+      {children}
+    </div>
+  );
+}
+function CardHeader({ title, subtitle }) {
+  return (
+    <div className="p-6 border-b border-themed">
+      <h2 className="text-xl font-semibold tracking-tight text-primary">{title}</h2>
+      {subtitle ? <p className="text-sm text-muted mt-1">{subtitle}</p> : null}
+    </div>
+  );
+}
+function CardBody({ children, className = "" }) {
+  return <div className={`p-6 ${className}`}>{children}</div>;
+}
+function Input({
+  label,
+  type = "text",
+  value,
+  onChange,
+  placeholder,
+  required,
+  name,
+  autoComplete,
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium text-primary">{label}</span>
+      <input
+        className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
+        type={type}
+        name={name}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        required={required}
+        autoComplete={autoComplete}
+      />
+    </label>
+  );
+}
+function Tabs({ tabs, current, onChange }) {
+  return (
+    <div className="flex gap-1 sm:gap-2 flex-wrap">
+      {tabs.map((t) => (
+        <button
+          key={t}
+          onClick={() => onChange(t)}
+          className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm rounded-xl border ${
+            current === t
+              ? "bg-indigo-600 text-white border-indigo-500"
+              : "bg-tertiary text-primary border-themed hover:bg-secondary"
+          }`}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+}
 function Banner({ children }) {
   return (
     <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-800 text-sm">
@@ -72,41 +164,21 @@ function Banner({ children }) {
 // -----------------------------
 // 🧾 Generate QR Codes
 // -----------------------------
-const GenerateQR = React.memo(function GenerateQR({ userDoc, isAdmin }) {
-  const { auth } = useFirebase();
-  const [store, setStore] = useState(userDoc?.storeNumber ? String(userDoc.storeNumber) : "");
-
-  // Update store when userDoc changes
-  useEffect(() => {
-    if (!isAdmin && userDoc) {
-      // Market+ level users can only use their home store
-      if (userDoc?.selectionType !== 'store' && userDoc?.homeStore) {
-        setStore(String(userDoc.homeStore));
-      }
-      // Store-level users with multiple stores can choose
-      else if (userDoc?.selectionType === 'store' && userDoc?.allowedStores && userDoc.allowedStores.length > 1) {
-        setStore(""); // Let them choose
-      }
-      // Single store users auto-set
-      else if (userDoc?.storeNumber) {
-        setStore(String(userDoc.storeNumber));
-      }
-    }
-  }, [userDoc, isAdmin]);
+function GenerateQR() {
+  const [store, setStore] = useState("");
   const [area, setArea] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const posterRef = React.useRef();
 
-  const ready = /^\d{3,6}$/.test(String(store || "").trim()) && !!area.trim() && !error && !busy;
+  const ready = /^\d{3,6}$/.test(store.trim()) && !!area.trim() && !error && !busy;
 
   function validate() {
     setError("");
-    const s = String(store || "").trim();
+    const s = store.trim();
     const a = area.trim();
-    if (!s) return setError(isAdmin ? "Please enter Store number." : "Store number not configured in your profile.");
-    if (!a) return setError("Please enter Area.");
+    if (!s || !a) return setError("Please enter both Store number and Area.");
     if (!/^\d{3,6}$/.test(s)) return setError("Store number must be 3–6 digits.");
     if (!/^[a-zA-Z0-9\s._-]{1,50}$/.test(a)) {
       return setError("Area allows letters, numbers, space, . _ - (max 50 chars).");
@@ -121,22 +193,7 @@ const GenerateQR = React.memo(function GenerateQR({ userDoc, isAdmin }) {
       if (!ok) return;
       setBusy(true);
       setQrDataUrl("");
-      
-      // Get authentication token
-      const authToken = await auth.currentUser?.getIdToken();
-      if (!authToken) {
-        throw new Error("Authentication required");
-      }
-      
-      // Ensure store is only numeric digits
-      const rawStore = String(store || "").trim();
-      const numericStore = rawStore.replace(/[^0-9]/g, ''); // Strip any non-numeric characters
-      
-      if (!numericStore || !/^\d{3,6}$/.test(numericStore)) {
-        throw new Error(`Invalid store number: "${rawStore}" -> "${numericStore}"`);
-      }
-      
-      const data = await mint(numericStore, area.trim(), authToken);
+      const data = await mint(store.trim(), area.trim());
       const shortUrl = `${window.location.origin}/s?t=${encodeURIComponent(data.token)}`;
       const dataUrl = await QR.toDataURL(shortUrl, {
         width: 600,
@@ -194,46 +251,17 @@ const GenerateQR = React.memo(function GenerateQR({ userDoc, isAdmin }) {
     <div className="space-y-4">
       <div className="bg-secondary rounded-2xl border border-themed p-3 sm:p-4">
         <div className="grid gap-3 sm:grid-cols-3">
-          {isAdmin ? (
-            <label className="block">
-              <span className="text-sm text-primary">Store number</span>
-              <input
-                className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
-                           placeholder:text-muted focus:border-indigo-500 focus:outline-none
-                           focus:ring-2 focus:ring-indigo-500"
-                placeholder="e.g. 1458"
-                value={store}
-                onChange={(e) => setStore(e.target.value)}
-              />
-            </label>
-          ) : (userDoc?.allowedStores && userDoc.allowedStores.length > 1 && userDoc?.selectionType === 'store') || userDoc?.homeStore ? (
-            <label className="block">
-              <span className="text-sm text-primary">Store number</span>
-              <select
-                className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
-                           focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                value={store}
-                onChange={(e) => setStore(e.target.value)}
-              >
-                <option value="">Select store...</option>
-                {/* Only show all allowed stores if user has store-level access */}
-                {userDoc?.selectionType === 'store' && userDoc?.allowedStores?.map(storeNum => (
-                  <option key={storeNum} value={storeNum}>Store {storeNum}</option>
-                ))}
-                {/* Always show home store for market+ level users */}
-                {userDoc?.homeStore && (userDoc?.selectionType !== 'store' || !userDoc?.allowedStores?.includes(userDoc.homeStore)) && (
-                  <option value={userDoc.homeStore}>Store {userDoc.homeStore} (Home Store)</option>
-                )}
-              </select>
-            </label>
-          ) : (
-            <div className="block">
-              <span className="text-sm text-primary">Store number</span>
-              <div className="mt-1 w-full rounded-xl border border-themed bg-tertiary text-primary px-3 py-2">
-                {store || "Not set"}
-              </div>
-            </div>
-          )}
+          <label className="block">
+            <span className="text-sm text-primary">Store number</span>
+            <input
+              className="mt-1 w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2
+                         placeholder:text-muted focus:border-indigo-500 focus:outline-none
+                         focus:ring-2 focus:ring-indigo-500"
+              placeholder="e.g. 1458"
+              value={store}
+              onChange={(e) => setStore(e.target.value)}
+            />
+          </label>
 
           <label className="block sm:col-span-2">
             <span className="text-sm text-primary">Area</span>
@@ -272,7 +300,7 @@ const GenerateQR = React.memo(function GenerateQR({ userDoc, isAdmin }) {
 
       <div className="bg-secondary rounded-2xl border border-themed p-4 sm:p-6 grid place-items-center">
         {qrDataUrl ? (
-          <PosterWithQR ref={posterRef} qrDataUrl={qrDataUrl} storeNumber={store} area={area} />
+          <PosterWithQR ref={posterRef} qrDataUrl={qrDataUrl} />
         ) : (
           <div className="w-48 h-48 sm:w-64 sm:h-64 grid place-items-center text-muted border border-themed rounded-xl">
             QR preview
@@ -281,7 +309,7 @@ const GenerateQR = React.memo(function GenerateQR({ userDoc, isAdmin }) {
       </div>
     </div>
   );
-});
+}
 
 // -----------------------------
 // Auth Views
@@ -355,15 +383,12 @@ function RegisterForm({ onSwitch }) {
     firstName: "",
     lastName: "",
     storeNumber: "",
-    homeStore: "",
     jobTitle: "",
     phone: "",
     email: "",
     password: "",
     confirm: "",
   });
-  const [selectionType, setSelectionType] = useState(""); // 'store', 'market', 'region', 'bu'
-  const [selectionValue, setSelectionValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -381,17 +406,7 @@ function RegisterForm({ onSwitch }) {
     setSuccess("");
     if (!passwordOk) return setError("Password must be at least 8 chars, include a letter and a number.");
     if (!passwordsMatch) return setError("Passwords do not match.");
-    
-    // Validate selection
-    if (!selectionType) return setError("Please select a level (Store, Market, Region, or BU).");
-    if (!selectionValue) return setError("Please enter or select a value.");
-    
-    // Get allowed stores based on selection
-    const allowedStores = getAllStoresForSelection(selectionType, selectionValue);
-    if (allowedStores.length === 0) {
-      return setError("Invalid selection. No stores found for the given input.");
-    }
-    
+    if (!/^[0-9]{3,6}$/.test(form.storeNumber)) return setError("Store number should be 3–6 digits.");
     try {
       setLoading(true);
       const cred = await createUserWithEmailAndPassword(auth, form.email, form.password);
@@ -399,12 +414,7 @@ function RegisterForm({ onSwitch }) {
       await setDoc(doc(getFirestore(), "users", cred.user.uid), {
         firstName: form.firstName.trim(),
         lastName: form.lastName.trim(),
-        storeNumber: allowedStores[0], // Default to first store in the list
-        homeStore: (form.homeStore || "").trim() || allowedStores[0], // Legacy store for QR generation
-        allowedStores: allowedStores, // Array of all accessible stores
-        selectionType: selectionType,
-        selectionValue: selectionValue,
-        selectionDisplay: getSelectionDisplayName(selectionType, selectionValue),
+        storeNumber: form.storeNumber.trim(),
         jobTitle: form.jobTitle.trim(),
         phone: form.phone.trim(),
         email: form.email.trim().toLowerCase(),
@@ -430,95 +440,7 @@ function RegisterForm({ onSwitch }) {
         <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
           <Input label="First name" value={form.firstName} onChange={updateField("firstName")} required autoComplete="given-name" />
           <Input label="Last name" value={form.lastName} onChange={updateField("lastName")} required autoComplete="family-name" />
-          
-          {/* Store/Market/Region/BU Selection */}
-          <div className="sm:col-span-2">
-            <label className="block">
-              <span className="text-sm font-medium text-primary">Access Level</span>
-              <select
-                className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
-                value={selectionType}
-                onChange={(e) => {
-                  setSelectionType(e.target.value);
-                  setSelectionValue("");
-                }}
-                required
-              >
-                <option value="">Select level...</option>
-                <option value="store">Store</option>
-                <option value="market">Market</option>
-                <option value="region">Region</option>
-                <option value="bu">Business Unit (BU)</option>
-              </select>
-            </label>
-          </div>
-          
-          {/* Dynamic input based on selection type */}
-          {selectionType && (
-            <div className="sm:col-span-2">
-              <label className="block">
-                <span className="text-sm font-medium text-primary">
-                  {selectionType === 'store' && 'Store Number'}
-                  {selectionType === 'market' && 'Market'}
-                  {selectionType === 'region' && 'Region'}
-                  {selectionType === 'bu' && 'Business Unit'}
-                </span>
-                {selectionType === 'store' ? (
-                  <input
-                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
-                    type="text"
-                    placeholder="Enter store number (e.g., 1458)"
-                    value={selectionValue}
-                    onChange={(e) => setSelectionValue(e.target.value)}
-                    required
-                  />
-                ) : selectionType === 'market' ? (
-                  <select
-                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
-                    value={selectionValue}
-                    onChange={(e) => setSelectionValue(e.target.value)}
-                    required
-                  >
-                    <option value="">Select market...</option>
-                    {getMarketOptions().map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                ) : selectionType === 'region' ? (
-                  <select
-                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
-                    value={selectionValue}
-                    onChange={(e) => setSelectionValue(e.target.value)}
-                    required
-                  >
-                    <option value="">Select region...</option>
-                    {getRegionOptions().map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                ) : selectionType === 'bu' ? (
-                  <select
-                    className="mt-1 w-full rounded-xl border-themed bg-primary text-primary focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 border px-3 py-2"
-                    value={selectionValue}
-                    onChange={(e) => setSelectionValue(e.target.value)}
-                    required
-                  >
-                    <option value="">Select BU...</option>
-                    {getBUOptions().map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                ) : null}
-              </label>
-              {selectionValue && (
-                <div className="mt-2 text-xs text-muted">
-                  This will give you access to {getAllStoresForSelection(selectionType, selectionValue).length} store(s)
-                </div>
-              )}
-            </div>
-          )}
-          
-          <Input label="Home Store (Legacy)" value={form.homeStore} onChange={updateField("homeStore")} placeholder="Enter your primary store number" />
+          <Input label="Store number" value={form.storeNumber} onChange={updateField("storeNumber")} required />
           <Input label="Job title" value={form.jobTitle} onChange={updateField("jobTitle")} required />
           <Input label="Phone number" value={form.phone} onChange={updateField("phone")} required autoComplete="tel" />
           <Input label="Email address" type="email" value={form.email} onChange={updateField("email")} required autoComplete="email" />
@@ -549,7 +471,7 @@ function RegisterForm({ onSwitch }) {
 // -----------------------------
 // App Shell w/ Tabs (single definition)
 // -----------------------------
-const Settings = React.memo(function Settings({ user }) {
+function Settings({ user }) {
   const { isDark, toggleTheme } = useTheme();
   const { db } = useFirebase();
   const [userDoc, setUserDoc] = useState(null);
@@ -807,10 +729,9 @@ const Settings = React.memo(function Settings({ user }) {
       </div>
     </div>
   );
-});
+}
 
-const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
-  console.log("Dashboard: Component called with props:", { userDoc, isAdmin });
+function Dashboard() {
   const { db } = useFirebase();
   const [stats, setStats] = useState({
     uniqueAreas: 0,
@@ -820,89 +741,60 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Don't run if we're waiting for userDoc to load (unless admin)
-    if (!isAdmin && !userDoc) {
-      console.log("Dashboard: Waiting for userDoc to load");
-      return;
-    }
-    
     let mounted = true;
     
     async function fetchDashboardStats() {
       try {
-        console.log("Dashboard: fetchDashboardStats called", { userDoc, isAdmin });
         const { getDocs, collection, query, where, Timestamp } = await import("firebase/firestore");
         
-        // Get start and end of today
+        // Get start and end of today (local time)
         const today = new Date();
         const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
         
-        // Convert to Firestore Timestamps
-        const startTimestamp = Timestamp.fromDate(startOfDay);
-        const endTimestamp = Timestamp.fromDate(endOfDay);
+        console.log('Dashboard: Today range:', startOfDay.toISOString(), 'to', endOfDay.toISOString());
         
-        // Query logs for today
-        const q = query(
-          collection(db, "logs"),
-          where("ts", ">=", startTimestamp),
-          where("ts", "<", endTimestamp)
-        );
+        // Query scans collection for today's data
+        const scansSnap = await getDocs(collection(db, "scans"));
+        const allScans = scansSnap.docs.map(doc => doc.data());
         
-        const querySnapshot = await getDocs(q);
-        let todayLogs = querySnapshot.docs.map(doc => doc.data());
+        // Filter to today's scans
+        const todayLogs = allScans.filter(scan => {
+          if (!scan.timestamp) return false;
+          const scanTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+          return scanTime >= startOfDay && scanTime < endOfDay;
+        });
         
-        // Filter logs by user's accessible stores (same logic as insights)
-        console.log("Dashboard: Before filtering - total logs:", todayLogs.length);
-        if (!isAdmin && userDoc) {
-          const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
-          console.log("Dashboard: User accessible stores:", accessibleStores);
-          console.log("Dashboard: Sample log stores:", todayLogs.slice(0, 3).map(log => log.store));
-          
-          // Normalize stores for comparison (handle leading zeros)
-          const normalizedAccessible = accessibleStores.map(store => {
-            const storeStr = String(store);
-            return storeStr.replace(/^0+/, '') || '0';
-          });
-          
-          todayLogs = todayLogs.filter(log => {
-            if (!log.store) return false;
-            const normalizedLogStore = String(log.store).replace(/^0+/, '') || '0';
-            return normalizedAccessible.includes(normalizedLogStore);
-          });
-          console.log("Dashboard: After filtering - remaining logs:", todayLogs.length);
-        } else {
-          console.log("Dashboard: Admin user or no userDoc - showing all logs");
-        }
+        console.log('Dashboard: Found', todayLogs.length, 'scans for today');
         
         if (!mounted) return;
         
-        // Calculate unique areas scanned today
-        const uniqueAreas = new Set(todayLogs.map(log => log.area?.toLowerCase()?.trim()).filter(Boolean)).size;
+        // Calculate unique areas scanned today (use areaDescription from scans)
+        const uniqueAreas = new Set(todayLogs.map(scan => (scan.areaDescription || scan.area)?.toLowerCase()?.trim()).filter(Boolean)).size;
         
         // Total requests today
         const totalRequests = todayLogs.length;
         
-        // Calculate average response time for business hours only (6:00 AM - 10:59 PM)
-        const respondedLogs = todayLogs.filter(log => {
-          if (!log.respondedAt || !log.ts) return false;
+        // Calculate average response time for claimed scans in business hours (6:00 AM - 10:59 PM)
+        const respondedScans = todayLogs.filter(scan => {
+          if (!scan.claimedAt || !scan.timestamp) return false;
           
           // Check if response was within business hours (6:00 AM - 10:59 PM)
-          const responseTime = log.respondedAt.toDate ? log.respondedAt.toDate() : new Date(log.respondedAt);
+          const responseTime = scan.claimedAt.toDate ? scan.claimedAt.toDate() : new Date(scan.claimedAt);
           const hour = responseTime.getHours();
           return hour >= 6 && hour <= 22; // 6:00 AM (6) through 10:59 PM (22)
         });
         
         let avgResponseTime = 0;
         
-        if (respondedLogs.length > 0) {
-          const totalResponseTime = respondedLogs.reduce((sum, log) => {
-            const requestTime = log.ts.toDate ? log.ts.toDate() : new Date(log.ts);
-            const responseTime = log.respondedAt.toDate ? log.respondedAt.toDate() : new Date(log.respondedAt);
+        if (respondedScans.length > 0) {
+          const totalResponseTime = respondedScans.reduce((sum, scan) => {
+            const requestTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+            const responseTime = scan.claimedAt.toDate ? scan.claimedAt.toDate() : new Date(scan.claimedAt);
             const diff = responseTime - requestTime;
             return sum + (diff / 60000); // Convert to minutes
           }, 0);
-          avgResponseTime = Math.round(totalResponseTime / respondedLogs.length);
+          avgResponseTime = Math.round(totalResponseTime / respondedScans.length);
         }
         
         setStats({
@@ -923,7 +815,7 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
 
     fetchDashboardStats();
     return () => { mounted = false; };
-  }, [db, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
+  }, [db]);
 
   return (
     <div className="grid md:grid-cols-3 gap-4">
@@ -950,10 +842,10 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
       </div>
     </div>
   );
-});
+}
 
 // Top Responders component
-const TopResponders = React.memo(function TopResponders({ db }) {
+function TopResponders({ db }) {
   const [responders, setResponders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [timePeriod, setTimePeriod] = useState('weekly');
@@ -974,8 +866,9 @@ const TopResponders = React.memo(function TopResponders({ db }) {
             startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             break;
           case 'weekly':
-            // Rolling 7 days (last 7 days from now)
-            startDate = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+            const dayOfWeek = now.getDay();
+            startDate = new Date(now.getTime() - (dayOfWeek * 24 * 60 * 60 * 1000));
+            startDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
             break;
           case 'monthly':
             startDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -987,39 +880,45 @@ const TopResponders = React.memo(function TopResponders({ db }) {
             startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         }
         
-        // Query responded logs within time period and business hours
-        const q = query(
-          collection(db, "logs"),
-          where("respondedAt", "!=", null),
-          orderBy("respondedAt", "desc")
-        );
-        
-        const snap = await getDocs(q);
-        const logs = snap.docs.map(d => d.data());
-        console.log('TopResponders: Found', logs.length, 'logs with responses');
+        // Query scans from the scans collection
+        const scansSnap = await getDocs(collection(db, "scans"));
+        const scans = scansSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        console.log('TopResponders: Found', scans.length, 'total scans');
         console.log('TopResponders: Time period:', timePeriod, 'Start date:', startDate);
         
-        // Filter to time period and business hours (6 AM - 10:59 PM)
-        const filteredLogs = logs.filter(log => {
-          const responseTime = log.respondedAt.toDate ? log.respondedAt.toDate() : new Date(log.respondedAt);
-          const hour = responseTime.getHours();
+        // Filter to claimed scans within time period and business hours
+        const filteredScans = scans.filter(scan => {
+          // Must have claimedByName
+          if (!scan.claimedByName) return false;
           
-          // Filter by business hours
+          // Get the claim time
+          let claimTime = null;
+          if (scan.claimedAt) {
+            claimTime = scan.claimedAt.toDate ? scan.claimedAt.toDate() : new Date(scan.claimedAt);
+          } else if (scan.timestamp) {
+            // Fallback to scan timestamp if no claimedAt
+            claimTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+          }
+          
+          if (!claimTime || isNaN(claimTime)) return false;
+          
+          const hour = claimTime.getHours();
+          
+          // Filter by business hours (6 AM - 10:59 PM)
           if (hour < 6 || hour > 22) return false;
           
           // Filter by time period
-          if (timePeriod !== 'alltime' && responseTime < startDate) return false;
+          if (timePeriod !== 'alltime' && claimTime < startDate) return false;
           
           return true;
         });
         
-        console.log('TopResponders: After filtering:', filteredLogs.length, 'logs');
-        
+        console.log('TopResponders: After filtering:', filteredScans.length, 'claimed scans');
         // Aggregate data by responder name
         const responderStats = {};
         
-        filteredLogs.forEach(log => {
-          const name = log.responderName;
+        filteredScans.forEach(scan => {
+          const name = scan.claimedByName;
           if (!name) return;
           
           if (!responderStats[name]) {
@@ -1032,21 +931,33 @@ const TopResponders = React.memo(function TopResponders({ db }) {
             };
           }
           
-          const responseTimeSeconds = log.responseTimeSeconds || 0;
+          // Calculate response time in seconds if we have both timestamps
+          let responseTimeSeconds = 0;
+          if (scan.claimedAt && scan.timestamp) {
+            const claimedTime = scan.claimedAt.toDate ? scan.claimedAt.toDate() : new Date(scan.claimedAt);
+            const scanTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+            responseTimeSeconds = Math.max(0, (claimedTime - scanTime) / 1000);
+          }
+          
           responderStats[name].totalResponses++;
-          responderStats[name].totalResponseTime += responseTimeSeconds;
-          responderStats[name].fastestResponse = Math.min(responderStats[name].fastestResponse, responseTimeSeconds);
-          responderStats[name].slowestResponse = Math.max(responderStats[name].slowestResponse, responseTimeSeconds);
+          if (responseTimeSeconds > 0) {
+            responderStats[name].totalResponseTime += responseTimeSeconds;
+            responderStats[name].fastestResponse = Math.min(responderStats[name].fastestResponse, responseTimeSeconds);
+            responderStats[name].slowestResponse = Math.max(responderStats[name].slowestResponse, responseTimeSeconds);
+          }
         });
         
         // Calculate averages and sort by total responses
         const sortedResponders = Object.values(responderStats)
-          .map(responder => ({
-            ...responder,
-            avgResponseTime: Math.round(responder.totalResponseTime / responder.totalResponses / 60), // Convert to minutes
-            fastestResponseMin: Math.round(responder.fastestResponse / 60),
-            slowestResponseMin: Math.round(responder.slowestResponse / 60)
-          }))
+          .map(responder => {
+            const avgSeconds = responder.totalResponses > 0 ? responder.totalResponseTime / responder.totalResponses : 0;
+            return {
+              ...responder,
+              avgResponseTime: Math.round(avgSeconds / 60), // Convert to minutes
+              fastestResponseMin: responder.fastestResponse === Infinity ? 0 : Math.round(responder.fastestResponse / 60),
+              slowestResponseMin: Math.round(responder.slowestResponse / 60)
+            };
+          })
           .sort((a, b) => b.totalResponses - a.totalResponses)
           .slice(0, 5);
         
@@ -1072,7 +983,7 @@ const TopResponders = React.memo(function TopResponders({ db }) {
   const getPeriodLabel = () => {
     switch (timePeriod) {
       case 'daily': return 'Today';
-      case 'weekly': return 'Last 7 days';  
+      case 'weekly': return 'This Week';  
       case 'monthly': return 'This Month';
       case 'alltime': return 'All Time';
       default: return 'Today';
@@ -1082,14 +993,14 @@ const TopResponders = React.memo(function TopResponders({ db }) {
   return (
     <div className="rounded-xl border border-themed bg-tertiary p-6">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold text-primary">📊 Top Responders</h3>
+        <h3 className="text-lg font-semibold text-primary">Top Responders</h3>
         <select 
           value={timePeriod}
           onChange={(e) => setTimePeriod(e.target.value)}
           className="px-3 py-1 text-sm border border-themed bg-secondary rounded"
         >
           <option value="daily">Daily</option>
-          <option value="weekly">Last 7 days</option>
+          <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
           <option value="alltime">All Time</option>
         </select>
@@ -1128,7 +1039,7 @@ const TopResponders = React.memo(function TopResponders({ db }) {
       )}
     </div>
   );
-});
+}
 
 // Admin pending changes management
 function PendingChangesList({ db }) {
@@ -1242,1101 +1153,60 @@ function PendingChangesList({ db }) {
   );
 }
 
-// Data Cleanup Tool for admins
-function DataCleanupTool({ db }) {
-  const { auth } = useFirebase();
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [searchCriteria, setSearchCriteria] = useState({
-    searchType: 'area',
-    searchValue: '',
-    store: '',
-    dateRange: 'all'
-  });
-  const [searchResults, setSearchResults] = useState([]);
-  const [selectedLogs, setSelectedLogs] = useState(new Set());
-  const [searching, setSearching] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [message, setMessage] = useState('');
-  const [stats, setStats] = useState({ total: 0, selected: 0 });
-
-  // Check if current user is admin
-  useEffect(() => {
-    async function checkAdminStatus() {
-      if (!auth.currentUser) {
-        setIsAdmin(false);
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const { getDoc, doc } = await import("firebase/firestore");
-        const userDoc = await getDoc(doc(db, "users", auth.currentUser.uid));
-        const isUserAdmin = userDoc.exists() && userDoc.data().email === 'sinaptick@gmail.com';
-        setIsAdmin(isUserAdmin);
-      } catch (error) {
-        console.error('Error checking admin status:', error);
-        setIsAdmin(false);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    checkAdminStatus();
-  }, [auth.currentUser, db]);
-
-  // Show loading state
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-8">
-        <div className="text-muted">Checking permissions...</div>
-      </div>
-    );
-  }
-
-  // Show access denied for non-admin users
-  if (!isAdmin) {
-    return (
-      <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
-        <div className="text-red-700 text-lg font-semibold mb-2">🚫 Access Denied</div>
-        <div className="text-red-600 text-sm">
-          The Data Cleanup Tool is restricted to administrators only.
-          <br />
-          Contact your system administrator if you need access to this feature.
-        </div>
-      </div>
-    );
-  }
-
-  const handleSearch = async () => {
-    // Allow searching by store only (no area required)
-    if (!searchCriteria.searchValue.trim() && !searchCriteria.store.trim()) {
-      setMessage('Please enter a search value or select a store');
-      return;
-    }
-
-    setSearching(true);
-    setMessage('');
-    setSelectedLogs(new Set());
-
-    try {
-      const { getDocs, collection, query, where, orderBy, limit } = await import("firebase/firestore");
-      
-      let q = collection(db, "logs");
-      
-      // Build query based on search criteria
-      let whereConditions = [];
-      let needsClientFiltering = false;
-      
-      // Add store filter if specified
-      if (searchCriteria.store.trim()) {
-        whereConditions.push(where("store", "==", searchCriteria.store.trim()));
-      }
-      
-      // Add search criteria
-      if (searchCriteria.searchValue.trim()) {
-        if (searchCriteria.searchType === 'area') {
-          whereConditions.push(where("area", "==", searchCriteria.searchValue.trim()));
-        } else if (searchCriteria.searchType === 'store' && !searchCriteria.store.trim()) {
-          whereConditions.push(where("store", "==", searchCriteria.searchValue.trim()));
-        } else if (searchCriteria.searchType === 'partial_area') {
-          needsClientFiltering = true;
-        }
-      }
-      
-      // Build the query
-      if (whereConditions.length > 0) {
-        q = query(q, ...whereConditions, orderBy("ts", "desc"), limit(1000));
-      } else {
-        q = query(q, orderBy("ts", "desc"), limit(1000));
-      }
-      
-      const snapshot = await getDocs(q);
-      let results = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().ts?.toDate?.() || new Date(doc.data().ts || 0)
-      }));
-      
-      // Client-side filtering for partial matches
-      if (needsClientFiltering && searchCriteria.searchType === 'partial_area') {
-        const searchTerm = searchCriteria.searchValue.toLowerCase();
-        results = results.filter(log => 
-          log.area?.toLowerCase().includes(searchTerm)
-        );
-      }
-      
-      // Date range filtering
-      if (searchCriteria.dateRange !== 'all') {
-        const now = new Date();
-        let cutoffDate;
-        
-        switch (searchCriteria.dateRange) {
-          case '7days':
-            cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            break;
-          case '30days':
-            cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-            break;
-          case '90days':
-            cutoffDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-            break;
-          default:
-            cutoffDate = new Date(0);
-        }
-        
-        results = results.filter(log => log.timestamp >= cutoffDate);
-      }
-      
-      // Sort by timestamp descending
-      results.sort((a, b) => b.timestamp - a.timestamp);
-      
-      setSearchResults(results);
-      setStats({ total: results.length, selected: 0 });
-      
-      if (results.length === 0) {
-        setMessage('No logs found matching the search criteria');
-      } else {
-        setMessage(`Found ${results.length} log entries`);
-      }
-      
-    } catch (error) {
-      console.error('Search error:', error);
-      setMessage('Error searching logs: ' + (error.message || error));
-      setSearchResults([]);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const handleSelectAll = () => {
-    if (selectedLogs.size === searchResults.length) {
-      setSelectedLogs(new Set());
-      setStats(prev => ({ ...prev, selected: 0 }));
-    } else {
-      const allIds = new Set(searchResults.map(log => log.id));
-      setSelectedLogs(allIds);
-      setStats(prev => ({ ...prev, selected: searchResults.length }));
-    }
-  };
-
-  const handleSelectLog = (logId) => {
-    const newSelected = new Set(selectedLogs);
-    if (newSelected.has(logId)) {
-      newSelected.delete(logId);
-    } else {
-      newSelected.add(logId);
-    }
-    setSelectedLogs(newSelected);
-    setStats(prev => ({ ...prev, selected: newSelected.size }));
-  };
-
-  const handleDeleteSelected = async () => {
-    if (selectedLogs.size === 0) {
-      setMessage('No logs selected for deletion');
-      return;
-    }
-
-    const confirmMessage = `Are you sure you want to delete ${selectedLogs.size} log entries? This action cannot be undone.`;
-    if (!window.confirm(confirmMessage)) {
-      return;
-    }
-
-    setDeleting(true);
-    setMessage('');
-
-    try {
-      const { deleteDoc, doc } = await import("firebase/firestore");
-      
-      // Delete in batches to avoid overwhelming Firestore
-      const selectedIds = Array.from(selectedLogs);
-      const batchSize = 50;
-      let deletedCount = 0;
-      
-      for (let i = 0; i < selectedIds.length; i += batchSize) {
-        const batch = selectedIds.slice(i, i + batchSize);
-        await Promise.all(batch.map(id => deleteDoc(doc(db, "logs", id))));
-        deletedCount += batch.length;
-        
-        // Update progress
-        setMessage(`Deleting logs: ${deletedCount}/${selectedIds.length}`);
-      }
-      
-      // Remove deleted items from search results
-      const remainingResults = searchResults.filter(log => !selectedLogs.has(log.id));
-      setSearchResults(remainingResults);
-      setSelectedLogs(new Set());
-      setStats({ total: remainingResults.length, selected: 0 });
-      
-      setMessage(`Successfully deleted ${deletedCount} log entries`);
-      
-    } catch (error) {
-      console.error('Delete error:', error);
-      setMessage('Error deleting logs: ' + (error.message || error));
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
-        <div className="text-amber-800 text-sm">
-          <div className="font-semibold mb-1">🔧 Admin Data Cleanup Tool</div>
-          Use this tool to search for and delete erroneous QR scan logs (e.g., test entries, spam, etc.).
-          <span className="text-red-600 block mt-1">⚠️ Deleted logs cannot be recovered. Use with caution.</span>
-        </div>
-      </div>
-
-      {/* Search Criteria */}
-      <div className="bg-secondary rounded-xl p-4 border border-themed">
-        <h3 className="text-lg font-semibold text-primary mb-3">Search Criteria</h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-primary mb-1">Search Type</label>
-            <select
-              className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
-              value={searchCriteria.searchType}
-              onChange={(e) => setSearchCriteria(prev => ({ ...prev, searchType: e.target.value }))}
-            >
-              <option value="area">Exact Area Match</option>
-              <option value="partial_area">Partial Area Match</option>
-              <option value="store">Store Number</option>
-            </select>
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-primary mb-1">
-              {searchCriteria.searchType === 'store' ? 'Store Number' : 'Area Name'}
-            </label>
-            <input
-              type="text"
-              className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
-              placeholder={searchCriteria.searchType === 'store' ? 'e.g., 1458' : 'e.g., test, Test Area'}
-              value={searchCriteria.searchValue}
-              onChange={(e) => setSearchCriteria(prev => ({ ...prev, searchValue: e.target.value }))}
-            />
-          </div>
-          
-          {searchCriteria.searchType !== 'store' && (
-            <div>
-              <label className="block text-sm font-medium text-primary mb-1">Filter by Store (Optional)</label>
-              <input
-                type="text"
-                className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
-                placeholder="e.g., 1458"
-                value={searchCriteria.store}
-                onChange={(e) => setSearchCriteria(prev => ({ ...prev, store: e.target.value }))}
-              />
-            </div>
-          )}
-          
-          <div>
-            <label className="block text-sm font-medium text-primary mb-1">Date Range</label>
-            <select
-              className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2"
-              value={searchCriteria.dateRange}
-              onChange={(e) => setSearchCriteria(prev => ({ ...prev, dateRange: e.target.value }))}
-            >
-              <option value="all">All Time</option>
-              <option value="7days">Last 7 Days</option>
-              <option value="30days">Last 30 Days</option>
-              <option value="90days">Last 90 Days</option>
-            </select>
-          </div>
-        </div>
-        
-        <div className="mt-4 flex gap-2">
-          <Button onClick={handleSearch} disabled={searching}>
-            {searching ? 'Searching...' : 'Search Logs'}
-          </Button>
-          
-          {searchResults.length > 0 && (
-            <Button 
-              onClick={handleDeleteSelected} 
-              disabled={deleting || selectedLogs.size === 0}
-              className="bg-red-500 hover:bg-red-600"
-            >
-              {deleting ? `Deleting... (${selectedLogs.size})` : `Delete Selected (${selectedLogs.size})`}
-            </Button>
-          )}
-        </div>
-        
-        {message && (
-          <div className={`mt-3 text-sm p-2 rounded ${message.includes('Error') || message.includes('⚠️') ? 'bg-red-100 text-red-700 border border-red-200' : 'bg-blue-100 text-blue-700 border border-blue-200'}`}>
-            {message}
-          </div>
-        )}
-      </div>
-
-      {/* Search Results */}
-      {searchResults.length > 0 && (
-        <div className="bg-secondary rounded-xl p-4 border border-themed">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-semibold text-primary">Search Results ({stats.total} found, {stats.selected} selected)</h3>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                className="rounded"
-                checked={selectedLogs.size === searchResults.length && searchResults.length > 0}
-                onChange={handleSelectAll}
-              />
-              Select All
-            </label>
-          </div>
-          
-          <div className="max-h-96 overflow-y-auto space-y-2">
-            {searchResults.map((log) => (
-              <div key={log.id} className="flex items-start gap-3 p-3 bg-tertiary rounded border border-themed">
-                <input
-                  type="checkbox"
-                  className="mt-1 rounded"
-                  checked={selectedLogs.has(log.id)}
-                  onChange={() => handleSelectLog(log.id)}
-                />
-                <div className="flex-1 text-sm">
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                    <div>
-                      <span className="font-medium text-primary">Store:</span>
-                      <span className="ml-1 text-primary">{log.store || 'N/A'}</span>
-                    </div>
-                    <div>
-                      <span className="font-medium text-primary">Area:</span>
-                      <span className="ml-1 text-primary">{log.area || 'N/A'}</span>
-                    </div>
-                    <div>
-                      <span className="font-medium text-primary">Date:</span>
-                      <span className="ml-1 text-primary">{log.timestamp.toLocaleDateString()}</span>
-                    </div>
-                    <div>
-                      <span className="font-medium text-primary">Time:</span>
-                      <span className="ml-1 text-primary">{log.timestamp.toLocaleTimeString()}</span>
-                    </div>
-                  </div>
-                  {log.responderName && (
-                    <div className="mt-1">
-                      <span className="font-medium text-primary">Responder:</span>
-                      <span className="ml-1 text-primary">{log.responderName}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// Enhanced Admin User Management System
-function GroupMeDataDisplay({ userId, isAdmin }) {
-  const [groupmeData, setGroupmeData] = useState(null);
+// Admin user search (standalone)
+function UserStatusSearch({ db }) {
+  const [email, setEmail] = useState("");
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [expanded, setExpanded] = useState(false);
-  const { auth } = useFirebase();
-  const user = auth?.currentUser;
-
-  const fetchGroupMeData = async () => {
-    if (!userId || !user) return;
-    
-    setLoading(true);
-    setError("");
-    
-    try {
-      const token = await user.getIdToken();
-      // Try direct function URL if rewrite fails (fallback for deployment issues)
-      const baseUrl = window.location.hostname === 'localhost' 
-        ? '/api/groupme/admin-user-data'
-        : 'https://us-central1-qrwebaccdb.cloudfunctions.net/groupmeAdminUserData';
-      
-      const response = await fetch(`${baseUrl}?firebase_uid=${encodeURIComponent(userId)}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setGroupmeData(data);
-      } else if (response.status === 404) {
-        setGroupmeData({ groupme_data: { tokens: [], bots: [], recent_webhook_activity: [], summary: { total_tokens: 0, total_bots: 0, stores_with_bots: [], recent_activity_count: 0 } } });
-      } else {
-        const errorText = await response.text();
-        setError(`Failed to fetch GroupMe data: ${errorText}`);
-      }
-    } catch (err) {
-      setError(`Error fetching GroupMe data: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (expanded && !groupmeData) {
-      fetchGroupMeData();
-    }
-  }, [expanded, userId]);
-
-  if (!userId) return null;
-
-  return (
-    <div className="border border-gray-600 rounded-lg p-4 bg-gray-800">
-      <div className="flex items-center justify-between mb-3">
-        <h4 className="text-lg font-medium text-white flex items-center gap-2">
-          <span className="text-green-400">📱</span>
-          GroupMe Integration Data
-        </h4>
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-blue-400 hover:text-blue-300 text-sm"
-        >
-          {expanded ? "Hide" : "Show"} Details
-        </button>
-      </div>
-
-      {expanded && (
-        <div className="space-y-4">
-          {loading && (
-            <div className="text-center py-4">
-              <div className="text-gray-400">Loading GroupMe data...</div>
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-3">
-              <div className="text-red-400 text-sm">{error}</div>
-            </div>
-          )}
-
-          {groupmeData && (
-            <div className="space-y-4">
-              {/* Summary */}
-              <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <div className="text-xl font-bold text-blue-400">{groupmeData.groupme_data.summary.total_tokens}</div>
-                  <div className="text-xs text-gray-400">Tokens</div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <div className="text-xl font-bold text-green-400">{groupmeData.groupme_data.summary.total_bots}</div>
-                  <div className="text-xs text-gray-400">Bots</div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <div className="text-xl font-bold text-purple-400">{groupmeData.groupme_data.summary.stores_with_bots.length}</div>
-                  <div className="text-xs text-gray-400">Stores</div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <div className="text-xl font-bold text-orange-400">{groupmeData.groupme_data.summary.recent_activity_count}</div>
-                  <div className="text-xs text-gray-400">Webhooks</div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <div className="text-xl font-bold text-cyan-400">{groupmeData.groupme_data.summary.successful_posts || 0}</div>
-                  <div className="text-xs text-gray-400">Sent</div>
-                </div>
-                <div className="bg-gray-700 rounded-lg p-3 text-center">
-                  <div className="text-xl font-bold text-red-400">{groupmeData.groupme_data.summary.failed_posts || 0}</div>
-                  <div className="text-xs text-gray-400">Failed</div>
-                </div>
-              </div>
-
-              {/* Connected Stores */}
-              {groupmeData.groupme_data.summary.stores_with_bots.length > 0 && (
-                <div>
-                  <h5 className="text-sm font-medium text-gray-300 mb-2">Connected Stores:</h5>
-                  <div className="flex flex-wrap gap-2">
-                    {groupmeData.groupme_data.summary.stores_with_bots.map(store => (
-                      <span key={store} className="px-2 py-1 bg-blue-600 text-white text-xs rounded">
-                        Store {store}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* GroupMe Accounts */}
-              {groupmeData.groupme_data.tokens.length > 0 && (
-                <div>
-                  <h5 className="text-sm font-medium text-gray-300 mb-2">GroupMe Accounts ({groupmeData.groupme_data.tokens.length}):</h5>
-                  <div className="space-y-2">
-                    {groupmeData.groupme_data.tokens.map(token => (
-                      <div key={token.groupme_user_id} className="bg-gray-700 rounded-lg p-3">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm text-white">
-                              ID: {token.groupme_user_id}
-                              {token.user_name && <span className="text-gray-400 ml-2">({token.user_name})</span>}
-                            </div>
-                            <div className="text-xs text-gray-400">
-                              Connected: {token.created_at ? new Date(token.created_at.seconds * 1000).toLocaleDateString() : 'Unknown'}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${token.has_token ? 'bg-green-400' : 'bg-red-400'}`}></span>
-                            <span className="text-xs text-gray-400">{token.has_token ? 'Active' : 'No Token'}</span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Bots */}
-              {groupmeData.groupme_data.bots.length > 0 && (
-                <div>
-                  <h5 className="text-sm font-medium text-gray-300 mb-2">Active Bots ({groupmeData.groupme_data.bots.length}):</h5>
-                  <div className="space-y-2">
-                    {groupmeData.groupme_data.bots.map(bot => (
-                      <div key={bot.bot_id} className="bg-gray-700 rounded-lg p-3">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm text-white">{bot.name}</div>
-                            <div className="text-xs text-gray-400">
-                              Store: {bot.store || 'Unknown'} | Group: {bot.group_id}
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              Bot ID: {bot.bot_id}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {bot.synced && <span className="text-xs bg-blue-600 text-white px-2 py-1 rounded">Synced</span>}
-                            <span className="text-xs text-gray-400">
-                              {bot.created_at ? new Date(bot.created_at.seconds * 1000).toLocaleDateString() : 'Unknown'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Recent Bot Posts */}
-              {groupmeData.groupme_data.recent_bot_posts && groupmeData.groupme_data.recent_bot_posts.length > 0 && (
-                <div>
-                  <h5 className="text-sm font-medium text-gray-300 mb-2">Recent Bot Posts ({groupmeData.groupme_data.recent_bot_posts.length}):</h5>
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {groupmeData.groupme_data.recent_bot_posts.map((post, index) => (
-                      <div key={index} className="text-xs text-gray-400 bg-gray-700 rounded p-2">
-                        <div className="flex items-center justify-between">
-                          <span className="flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${post.success ? 'bg-green-400' : 'bg-red-400'}`}></span>
-                            Store {post.store} - {post.area}
-                          </span>
-                          <span>{post.timestamp ? new Date(post.timestamp.seconds * 1000).toLocaleString() : 'Unknown'}</span>
-                        </div>
-                        <div className="text-gray-500 mt-1 truncate">{post.message}</div>
-                        <div className="text-gray-600">Group: {post.group_id} | Status: {post.response_status}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Recent Activity */}
-              {groupmeData.groupme_data.recent_webhook_activity.length > 0 && (
-                <div>
-                  <h5 className="text-sm font-medium text-gray-300 mb-2">Recent Webhook Activity ({groupmeData.groupme_data.recent_webhook_activity.length}):</h5>
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {groupmeData.groupme_data.recent_webhook_activity.map((activity, index) => (
-                      <div key={index} className="text-xs text-gray-400 bg-gray-700 rounded p-2">
-                        <div className="flex items-center justify-between">
-                          <span>{activity.sender_name} - {activity.message_type}</span>
-                          <span>{activity.timestamp ? new Date(activity.timestamp.seconds * 1000).toLocaleString() : 'Unknown'}</span>
-                        </div>
-                        <div className="text-gray-500">
-                          Group: {activity.group_id}
-                          {activity.text_preview && <span> | "{activity.text_preview.substring(0, 30)}..."</span>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* No Data Message */}
-              {groupmeData.groupme_data.summary.total_tokens === 0 && groupmeData.groupme_data.summary.total_bots === 0 && (
-                <div className="text-center py-6 text-gray-400">
-                  <div className="text-4xl mb-2">📱</div>
-                  <div>No GroupMe integration data found</div>
-                  <div className="text-sm text-gray-500">This user hasn't connected any GroupMe accounts</div>
-                </div>
-              )}
-
-              {/* Refresh Button */}
-              <div className="flex justify-end">
-                <button
-                  onClick={fetchGroupMeData}
-                  disabled={loading}
-                  className="text-xs px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white rounded"
-                >
-                  {loading ? "Refreshing..." : "Refresh Data"}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function UserManagement({ db }) {
-  const [searchType, setSearchType] = useState("email");
-  const [searchValue, setSearchValue] = useState("");
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [editingUser, setEditingUser] = useState(null);
-  const [editForm, setEditForm] = useState({});
-  const [saving, setSaving] = useState(false);
-
-  const searchTypes = [
-    { value: "email", label: "Email Address" },
-    { value: "name", label: "Name (First/Last)" },
-    { value: "store", label: "Store Number" },
-    { value: "market", label: "Market Number" },
-    { value: "region", label: "Region Number" }
-  ];
 
   async function handleSearch(e) {
     e.preventDefault();
     setError("");
-    setResults([]);
-    if (!searchValue.trim()) return setError("Enter a search value.");
-    
+    setResult(null);
+    if (!email.trim()) return setError("Enter an email address.");
     setLoading(true);
     try {
-      const { getDocs, collection, query, where, orderBy } = await import("firebase/firestore");
-      let q;
-      
-      switch (searchType) {
-        case "email":
-          q = query(collection(db, "users"), where("email", "==", searchValue.trim().toLowerCase()));
-          break;
-        case "name":
-          // Search by first name or last name (case insensitive)
-          const searchTerm = searchValue.trim().toLowerCase();
-          q = query(collection(db, "users"), orderBy("firstName"));
-          break;
-        case "store":
-          // Find users with access to this store
-          const storeNum = parseInt(searchValue.trim());
-          if (isNaN(storeNum)) {
-            setError("Store number must be a valid number.");
-            setLoading(false);
-            return;
-          }
-          q = query(collection(db, "users"));
-          break;
-        case "market":
-          const marketNum = parseInt(searchValue.trim());
-          if (isNaN(marketNum)) {
-            setError("Market number must be a valid number.");
-            setLoading(false);
-            return;
-          }
-          q = query(collection(db, "users"), where("selectionType", "==", "market"), where("selectionValue", "==", marketNum));
-          break;
-        case "region":
-          const regionNum = parseInt(searchValue.trim());
-          if (isNaN(regionNum)) {
-            setError("Region number must be a valid number.");
-            setLoading(false);
-            return;
-          }
-          q = query(collection(db, "users"), where("selectionType", "==", "region"), where("selectionValue", "==", regionNum));
-          break;
-        default:
-          q = query(collection(db, "users"));
-      }
-      
+      const { getDocs, collection, query, where } = await import("firebase/firestore");
+      const q = query(collection(db, "users"), where("email", "==", email.trim().toLowerCase()));
       const snap = await getDocs(q);
-      let foundUsers = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      // Client-side filtering for complex searches
-      if (searchType === "name") {
-        const searchTerm = searchValue.trim().toLowerCase();
-        foundUsers = foundUsers.filter(user => 
-          user.firstName?.toLowerCase().includes(searchTerm) || 
-          user.lastName?.toLowerCase().includes(searchTerm)
-        );
-      } else if (searchType === "store") {
-        const storeStr = searchValue.trim();
-        const storeNum = parseInt(storeStr);
-        foundUsers = foundUsers.filter(user => {
-          // Check if user has access to this store
-          if (user.allowedStores && Array.isArray(user.allowedStores)) {
-            // Check both string and number versions since data might be inconsistent
-            return user.allowedStores.includes(storeNum) || 
-                   user.allowedStores.includes(storeStr) ||
-                   user.allowedStores.some(s => String(s) === storeStr);
-          }
-          // Check homeStore field (might be string or number)
-          if (user.homeStore) {
-            return String(user.homeStore) === storeStr;
-          }
-          // Fallback to old storeNumber field (might be string or number)
-          if (user.storeNumber) {
-            return String(user.storeNumber) === storeStr;
-          }
-          // Check store field as well
-          if (user.store) {
-            return String(user.store) === storeStr;
-          }
-          return false;
-        });
-      }
-      
-      if (foundUsers.length === 0) {
-        setError(`No users found for ${searchTypes.find(t => t.value === searchType)?.label}: "${searchValue}"`);
+      if (snap.empty) {
+        setError("No user found with that email.");
       } else {
-        setResults(foundUsers);
+        setResult(snap.docs[0].data());
       }
     } catch (err) {
-      console.error("Search error:", err);
       setError("Error searching: " + (err.message || err));
     } finally {
       setLoading(false);
     }
   }
 
-  function startEdit(user) {
-    setEditingUser(user);
-    setEditForm({
-      firstName: user.firstName || "",
-      lastName: user.lastName || "",
-      email: user.email || "",
-      phone: user.phone || "",
-      jobTitle: user.jobTitle || "",
-      storeNumber: user.storeNumber || "",
-      homeStore: user.homeStore || "",
-      selectionType: user.selectionType || "store",
-      selectionValue: user.selectionValue || "",
-      approved: user.approved || false,
-      emailVerified: user.emailVerified || false
-    });
-  }
-
-  async function saveUser() {
-    if (!editingUser) return;
-    
-    setSaving(true);
-    try {
-      const { doc, updateDoc } = await import("firebase/firestore");
-      const userRef = doc(db, "users", editingUser.id);
-      
-      // Calculate allowedStores based on selection
-      let allowedStores = [];
-      if (editForm.selectionType === "store" && editForm.selectionValue) {
-        allowedStores = [parseInt(editForm.selectionValue)];
-      } else if (editForm.selectionType === "market" && editForm.selectionValue) {
-        // Get stores for this market from storeHierarchy
-        const { getAllStoresForSelection } = await import("./storeHierarchy.js");
-        allowedStores = getAllStoresForSelection("market", editForm.selectionValue);
-      } else if (editForm.selectionType === "region" && editForm.selectionValue) {
-        const { getAllStoresForSelection } = await import("./storeHierarchy.js");
-        allowedStores = getAllStoresForSelection("region", editForm.selectionValue);
-      } else if (editForm.selectionType === "bu" && editForm.selectionValue) {
-        const { getAllStoresForSelection } = await import("./storeHierarchy.js");
-        allowedStores = getAllStoresForSelection("bu", editForm.selectionValue);
-      }
-
-      const updateData = {
-        firstName: editForm.firstName,
-        lastName: editForm.lastName,
-        email: editForm.email.toLowerCase(),
-        phone: editForm.phone,
-        jobTitle: editForm.jobTitle,
-        storeNumber: parseInt(editForm.storeNumber) || null,
-        homeStore: (editForm.homeStore || "").trim() || null,
-        selectionType: editForm.selectionType,
-        selectionValue: editForm.selectionValue,
-        allowedStores,
-        approved: editForm.approved,
-        emailVerified: editForm.emailVerified
-      };
-
-      await updateDoc(userRef, updateData);
-      
-      // Update local results
-      setResults(results.map(user => 
-        user.id === editingUser.id 
-          ? { ...user, ...updateData }
-          : user
-      ));
-      
-      setEditingUser(null);
-      setEditForm({});
-    } catch (err) {
-      console.error("Save error:", err);
-      setError("Error saving user: " + (err.message || err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
   return (
-    <div className="space-y-6">
-      <div className="bg-secondary rounded-xl p-6 border border-themed">
-        <h3 className="text-lg font-semibold text-primary mb-4">User Management</h3>
-        
-        {/* Search Form */}
-        <form onSubmit={handleSearch} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-primary mb-2">Search By:</label>
-              <select
-                value={searchType}
-                onChange={(e) => setSearchType(e.target.value)}
-                className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-              >
-                {searchTypes.map(type => (
-                  <option key={type.value} value={type.value}>{type.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-primary mb-2">Search Value:</label>
-              <input
-                type="text"
-                className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                placeholder={`Enter ${searchTypes.find(t => t.value === searchType)?.label.toLowerCase()}`}
-                value={searchValue}
-                onChange={(e) => setSearchValue(e.target.value)}
-                required
-              />
-            </div>
-            <div className="flex items-end">
-              <Button type="submit" disabled={loading} className="w-full">
-                {loading ? "Searching..." : "Search Users"}
-              </Button>
-            </div>
-          </div>
-        </form>
-
-        {error && <div className="text-sm text-red-600 mt-4 p-3 bg-red-50 rounded-xl">{error}</div>}
-      </div>
-
-      {/* Search Results */}
-      {results.length > 0 && (
-        <div className="bg-secondary rounded-xl p-6 border border-themed">
-          <h4 className="text-md font-semibold text-primary mb-4">
-            Found {results.length} user{results.length !== 1 ? 's' : ''}
-          </h4>
-          
-          <div className="space-y-4">
-            {results.map(user => (
-              <div key={user.id} className="bg-tertiary rounded-xl border border-themed p-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
-                  <div>
-                    <strong className="text-primary">Name:</strong>
-                    <div>{user.firstName} {user.lastName}</div>
-                  </div>
-                  <div>
-                    <strong className="text-primary">Email:</strong>
-                    <div className="font-mono text-xs">{user.email}</div>
-                  </div>
-                  <div>
-                    <strong className="text-primary">Access:</strong>
-                    <div>{user.selectionType}: {user.selectionValue || user.storeNumber}</div>
-                  </div>
-                  <div>
-                    <strong className="text-primary">Job Title:</strong>
-                    <div>{user.jobTitle || "Not specified"}</div>
-                  </div>
-                  <div>
-                    <strong className="text-primary">Status:</strong>
-                    <div className="space-x-2">
-                      <span className={user.approved ? "text-green-600" : "text-red-600"}>
-                        {user.approved ? "✅ Approved" : "❌ Pending"}
-                      </span>
-                      <span className={user.emailVerified ? "text-green-600" : "text-yellow-600"}>
-                        {user.emailVerified ? "📧 Verified" : "📧 Unverified"}
-                      </span>
-                    </div>
-                  </div>
-                  <div>
-                    <strong className="text-primary">Stores:</strong>
-                    <div className="text-xs">
-                      {user.allowedStores && user.allowedStores.length > 0 
-                        ? user.allowedStores.join(", ")
-                        : user.storeNumber || "None"
-                      }
-                    </div>
-                  </div>
-                  {user.homeStore && (
-                    <div>
-                      <strong className="text-primary">Home Store:</strong>
-                      <div className="text-xs">{user.homeStore}</div>
-                    </div>
-                  )}
-                </div>
-                
-                {/* GroupMe Integration Status */}
-                <GroupMeDataDisplay userId={user.id} />
-                
-                <div className="mt-4 flex justify-end">
-                  <Button 
-                    onClick={() => startEdit(user)}
-                    className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2"
-                  >
-                    Edit User
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Edit User Modal */}
-      {editingUser && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-secondary rounded-xl p-6 border border-themed max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <h3 className="text-lg font-semibold text-primary mb-4">
-              Edit User: {editingUser.firstName} {editingUser.lastName}
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">First Name:</label>
-                <input
-                  type="text"
-                  value={editForm.firstName}
-                  onChange={(e) => setEditForm({...editForm, firstName: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Last Name:</label>
-                <input
-                  type="text"
-                  value={editForm.lastName}
-                  onChange={(e) => setEditForm({...editForm, lastName: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Email:</label>
-                <input
-                  type="email"
-                  value={editForm.email}
-                  onChange={(e) => setEditForm({...editForm, email: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Phone:</label>
-                <input
-                  type="text"
-                  value={editForm.phone}
-                  onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Job Title:</label>
-                <input
-                  type="text"
-                  value={editForm.jobTitle}
-                  onChange={(e) => setEditForm({...editForm, jobTitle: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Access Level:</label>
-                <select
-                  value={editForm.selectionType}
-                  onChange={(e) => setEditForm({...editForm, selectionType: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                >
-                  <option value="store">Store</option>
-                  <option value="market">Market</option>
-                  <option value="region">Region</option>
-                  <option value="bu">Business Unit</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">
-                  {editForm.selectionType.charAt(0).toUpperCase() + editForm.selectionType.slice(1)} Number:
-                </label>
-                <input
-                  type="number"
-                  value={editForm.selectionValue}
-                  onChange={(e) => setEditForm({...editForm, selectionValue: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Legacy Store Number:</label>
-                <input
-                  type="number"
-                  value={editForm.storeNumber}
-                  onChange={(e) => setEditForm({...editForm, storeNumber: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                  placeholder="For backward compatibility"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-primary mb-1">Home Store:</label>
-                <input
-                  type="number"
-                  value={editForm.homeStore}
-                  onChange={(e) => setEditForm({...editForm, homeStore: e.target.value})}
-                  className="w-full rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
-                  placeholder="Store for QR code generation"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="approved"
-                  checked={editForm.approved}
-                  onChange={(e) => setEditForm({...editForm, approved: e.target.checked})}
-                  className="rounded"
-                />
-                <label htmlFor="approved" className="text-sm text-primary">Account Approved</label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="emailVerified"
-                  checked={editForm.emailVerified}
-                  onChange={(e) => setEditForm({...editForm, emailVerified: e.target.checked})}
-                  className="rounded"
-                />
-                <label htmlFor="emailVerified" className="text-sm text-primary">Email Verified</label>
-              </div>
-            </div>
-
-            {/* GroupMe Data in Edit Modal */}
-            <div className="mb-6">
-              <GroupMeDataDisplay userId={editingUser.id} />
-            </div>
-
-            <div className="flex justify-end space-x-3">
-              <Button
-                onClick={() => {setEditingUser(null); setEditForm({});}}
-                className="bg-gray-500 hover:bg-gray-600 text-white"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={saveUser}
-                disabled={saving}
-                className="bg-green-500 hover:bg-green-600 text-white"
-              >
-                {saving ? "Saving..." : "Save Changes"}
-              </Button>
-            </div>
-          </div>
+    <div className="bg-secondary rounded-xl p-4 border border-themed max-w-lg">
+      <form onSubmit={handleSearch} className="flex gap-2 mb-2">
+        <input
+          type="email"
+          className="flex-1 rounded-xl border border-themed bg-primary text-primary px-3 py-2 text-sm"
+          placeholder="Search user by email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+        />
+        <Button type="submit" disabled={loading}>
+          {loading ? "Searching…" : "Search"}
+        </Button>
+      </form>
+      {error && <div className="text-sm text-red-600 mb-2">{error}</div>}
+      {result && (
+        <div className="text-sm bg-tertiary rounded-xl border border-themed p-3 text-primary">
+          <div><strong>Name:</strong> {result.firstName} {result.lastName}</div>
+          <div><strong>Email:</strong> {result.email}</div>
+          <div><strong>Store:</strong> {result.storeNumber}</div>
+          <div><strong>Job Title:</strong> {result.jobTitle}</div>
+          <div><strong>Phone:</strong> {result.phone}</div>
+          <div><strong>Email Verified:</strong> {result.emailVerified ? "Yes" : "No"}</div>
+          <div><strong>Approved:</strong> {result.approved ? "Yes" : "No"}</div>
         </div>
       )}
     </div>
@@ -2346,6 +1216,9 @@ function UserManagement({ db }) {
 function Shell({ user, onSignOut }) {
   const { db } = useFirebase();
   const isAdmin = user?.email === "sinaptick@gmail.com";
+  const tabs = isAdmin
+    ? ["Dashboard", "Insights", "Generate QR", "Settings", "Admin", "Setup"]
+    : ["Dashboard", "Insights", "Generate QR", "Settings", "Setup"];
   const [active, setActive] = useState("Dashboard");
   const [showContactUs, setShowContactUs] = useState(false);
   const [currentAdminView, setCurrentAdminView] = useState("overview");
@@ -2353,27 +1226,6 @@ function Shell({ user, onSignOut }) {
 
   // Approval gate
   const [userDoc, setUserDoc] = useState(null);
-  
-  // Determine available tabs based on user permissions
-  const getAvailableTabs = () => {
-    let baseTabs = ["Dashboard", "Insights"];
-    
-    // Only show Generate QR for single-store users or admins
-    if (isAdmin || (userDoc && (!userDoc.allowedStores || userDoc.allowedStores.length === 1))) {
-      baseTabs.push("Generate QR");
-    }
-    
-    baseTabs.push("Settings");
-    
-    if (isAdmin) {
-      baseTabs.push("Admin");
-    }
-    
-    baseTabs.push("Setup");
-    return baseTabs;
-  };
-  
-  const tabs = getAvailableTabs();
   useEffect(() => {
     if (!user?.uid) return;
     let mounted = true;
@@ -2385,35 +1237,201 @@ function Shell({ user, onSignOut }) {
     return () => { mounted = false; };
   }, [user, db]);
 
-  // Insights data using custom hook
-  const insightsData = useInsightsData(active, db, userDoc);
+  // Insights filters + data
+  const [stores, setStores] = useState([]);
+  const [selectedStores, setSelectedStores] = useState([]);
 
+  const [weeks, setWeeks] = useState([]);
+  const [selectedWeek, setSelectedWeek] = useState([]);
 
+  const [areas, setAreas] = useState([]);
+  const [selectedAreas, setSelectedAreas] = useState([]);
 
-  // Build filtered logs for InsightsAI (apply additional user permissions on top of hook data)
-  const filteredLogs = useMemo(() => {
-    if (!insightsData.filteredLogs?.length) return [];
-    return insightsData.filteredLogs.filter((l) => {
-      // Non-admin users can only see data from their accessible stores
-      if (!isAdmin && userDoc) {
-        const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
-        
-        // Normalize stores for comparison (handle leading zeros)
-        const normalizedAccessible = accessibleStores.map(store => {
-          const storeStr = String(store);
-          return storeStr.replace(/^0+/, '') || '0';
+  const [showStores, setShowStores] = useState(false);
+  const [showWeeks, setShowWeeks] = useState(false);
+  const [showAreas, setShowAreas] = useState(false);
+
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  // Load logs + build options
+  useEffect(() => {
+    if (active !== "Insights") return;
+    let mounted = true;
+    setLogsLoading(true);
+    (async () => {
+      try {
+        console.log("Loading logs for insights...");
+        const { getDocs, collection } = await import("firebase/firestore");
+        const logsSnap = await getDocs(collection(db, "logs"));
+        console.log("Logs query returned:", logsSnap.docs.length, "documents");
+        const logsArr = [];
+        const storeSet = new Set();
+        const weekMap = new Map();
+        const areaSet = new Set();
+        const week0 = new Date(2025, 1, 1);
+
+        logsSnap.forEach((d) => {
+          const data = d.data();
+          logsArr.push(data);
+          if (data?.store) storeSet.add(String(data.store));
+          if (data?.area) areaSet.add(data.area);
+
+          let ts = data?.ts;
+          let dateObj = null;
+          try {
+            if (ts && typeof ts.toDate === "function") dateObj = ts.toDate();
+            else if (ts && ts.seconds) dateObj = new Date(ts.seconds * 1000);
+            else if (typeof ts === "string" || typeof ts === "number") dateObj = new Date(ts);
+
+            if (dateObj && !isNaN(dateObj)) {
+              const diffDays = Math.floor((dateObj - week0) / (1000 * 60 * 60 * 24));
+              if (diffDays >= 0) {
+                const weekNum = Math.floor(diffDays / 7) + 1;
+                const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
+                const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
+                const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                })}–${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
+                weekMap.set(weekNum, label);
+              }
+            }
+          } catch {}
         });
-        
-        if (!l.store) return false;
-        const normalizedLogStore = String(l.store).replace(/^0+/, '') || '0';
-        
-        if (!normalizedAccessible.includes(normalizedLogStore)) {
-          return false;
+
+        if (mounted) {
+          setLogs(logsArr);
+          const sortedStores = Array.from(storeSet).sort();
+          setStores(sortedStores);
+          
+          // Auto-select user's store if it exists in the available stores and no stores are currently selected
+          if (userDoc?.storeNumber && sortedStores.includes(userDoc.storeNumber) && selectedStores.length === 0) {
+            setSelectedStores([userDoc.storeNumber]);
+          }
+          
+          setWeeks(
+            Array.from(weekMap.values()).sort((a, b) => {
+              const wa = parseInt(a.match(/Week (\d+)/)?.[1] || "0", 10);
+              const wb = parseInt(b.match(/Week (\d+)/)?.[1] || "0", 10);
+              return wa - wb;
+            })
+          );
+          setAreas(Array.from(areaSet).sort());
         }
+      } finally {
+        if (mounted) setLogsLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [active, db]);
+
+  // Derived filtered options
+  const filteredAreas = useMemo(() => {
+    if (!selectedStores.length && !selectedWeek.length) return areas;
+    let filtered = logs;
+    if (selectedStores.length) filtered = filtered.filter(l => selectedStores.includes(String(l.store)));
+    if (selectedWeek.length) {
+      const week0 = new Date(2025, 1, 1);
+      filtered = filtered.filter(l => {
+        let ts = l.ts;
+        let d = null;
+        if (ts?.toDate) d = ts.toDate();
+        else if (ts?.seconds) d = new Date(ts.seconds * 1000);
+        else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
+        if (!d || isNaN(d)) return false;
+        const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
+        if (diffDays < 0) return false;
+        const weekNum = Math.floor(diffDays / 7) + 1;
+        const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
+        const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
+        const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined,{month:"short",day:"numeric"})}–${weekEnd.toLocaleDateString(undefined,{month:"short",day:"numeric"})})`;
+        return selectedWeek.includes(label);
+      });
+    }
+    return Array.from(new Set(filtered.map(l => l.area))).sort();
+  }, [areas, logs, selectedStores, selectedWeek]);
+
+  const filteredWeeks = useMemo(() => {
+    if (!selectedStores.length && !selectedAreas.length) return weeks;
+    let filtered = logs;
+    if (selectedStores.length) filtered = filtered.filter(l => selectedStores.includes(String(l.store)));
+    if (selectedAreas.length) filtered = filtered.filter(l => selectedAreas.includes(l.area));
+
+    const week0 = new Date(2025, 1, 1);
+    const weekMap = new Map();
+    filtered.forEach(l => {
+      let ts = l.ts;
+      let d = null;
+      if (ts?.toDate) d = ts.toDate();
+      else if (ts?.seconds) d = new Date(ts.seconds * 1000);
+      else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
+      if (!d || isNaN(d)) return;
+      const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
+      if (diffDays < 0) return;
+      const weekNum = Math.floor(diffDays / 7) + 1;
+      const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
+      const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
+      const label = `Week ${weekNum} (${weekStart.toLocaleDateString(undefined,{month:"short",day:"numeric"})}–${weekEnd.toLocaleDateString(undefined,{month:"short",day:"numeric"})})`;
+      weekMap.set(weekNum, label);
+    });
+    return Array.from(weekMap.values()).sort((a, b) => {
+      const wa = parseInt(a.match(/Week (\d+)/)?.[1] || "0", 10);
+      const wb = parseInt(b.match(/Week (\d+)/)?.[1] || "0", 10);
+      return wa - wb;
+    });
+  }, [weeks, logs, selectedStores, selectedAreas]);
+
+  // Keep selections valid when options shrink
+  useEffect(() => {
+    setSelectedAreas(prev => prev.filter(a => filteredAreas.includes(a)));
+  }, [filteredAreas]);
+  useEffect(() => {
+    setSelectedWeek(prev => prev.filter(w => filteredWeeks.includes(w)));
+  }, [filteredWeeks]);
+
+  // Auto-select first store
+  useEffect(() => {
+    if (stores.length > 0) {
+      setSelectedStores(prev => {
+        if (!prev.length || prev.some(s => !stores.includes(s))) return [stores[0]];
+        return prev;
+      });
+    }
+  }, [stores]);
+
+  // Build filtered logs for InsightsAI
+  const filteredLogs = useMemo(() => {
+    if (!logs?.length) return [];
+    const week0 = new Date(2025, 1, 1);
+    const labelForTs = (ts) => {
+      let d = null;
+      if (ts?.toDate) d = ts.toDate();
+      else if (ts?.seconds) d = new Date(ts.seconds * 1000);
+      else if (typeof ts === "string" || typeof ts === "number") d = new Date(ts);
+      if (!d || isNaN(d)) return null;
+      const diffDays = Math.floor((d - week0) / (1000 * 60 * 60 * 24));
+      if (diffDays < 0) return null;
+      const weekNum = Math.floor(diffDays / 7) + 1;
+      const weekStart = new Date(week0.getTime() + (weekNum - 1) * 7 * 24 * 60 * 60 * 1000);
+      const weekEnd = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
+      return `Week ${weekNum} (${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
+    };
+    return logs.filter((l) => {
+      // Non-admin users can only see data from their own store
+      if (!isAdmin && userDoc?.storeNumber && String(l.store) !== userDoc.storeNumber) {
+        return false;
+      }
+      
+      if (selectedStores.length && !selectedStores.includes(String(l.store))) return false;
+      if (selectedAreas.length && !selectedAreas.includes(l.area)) return false;
+      if (selectedWeek.length) {
+        const label = labelForTs(l.ts);
+        if (!label || !selectedWeek.includes(label)) return false;
       }
       return true;
     });
-  }, [insightsData.filteredLogs, isAdmin, userDoc?.storeNumber, userDoc?.allowedStores]);
+  }, [logs, selectedStores, selectedAreas, selectedWeek, isAdmin, userDoc?.storeNumber]);
 
   // Gate for unapproved users
   if (userDoc && userDoc.approved === false && !isAdmin) {
@@ -2431,6 +1449,17 @@ function Shell({ user, onSignOut }) {
     );
   }
 
+  // Select-All helpers (must be AFTER filtered memos)
+  const allAreasVisible = filteredAreas;
+  const allWeeksVisible = filteredWeeks;
+  const allAreasChecked = allAreasVisible.length > 0 && selectedAreas.length === allAreasVisible.length;
+  const allWeeksChecked = allWeeksVisible.length > 0 && selectedWeek.length === allWeeksVisible.length;
+  const toggleAllAreas = () => {
+    setSelectedAreas(prev => prev.length === allAreasVisible.length ? [] : [...allAreasVisible]);
+  };
+  const toggleAllWeeks = () => {
+    setSelectedWeek(prev => prev.length === allWeeksVisible.length ? [] : [...allWeeksVisible]);
+  };
 
   return (
     <div className="min-h-screen bg-primary">
@@ -2473,22 +1502,304 @@ function Shell({ user, onSignOut }) {
           </CardBody>
         </Card>
 
-        <TabContent
-          active={active}
-          user={user}
-          isAdmin={isAdmin}
-          userDoc={userDoc}
-          db={db}
-          showContactUs={showContactUs}
-          setShowContactUs={setShowContactUs}
-          currentSettingsView={currentSettingsView}
-          setCurrentSettingsView={setCurrentSettingsView}
-          currentAdminView={currentAdminView}
-          setCurrentAdminView={setCurrentAdminView}
-          insightsData={insightsData}
-          filteredLogs={filteredLogs}
-          setActive={setActive}
-        />
+        {active === "Setup" && (
+          <Card>
+            <CardHeader title="Store Implementation Setup" subtitle="Follow these steps to implement QRcallbox in your store" />
+            <CardBody>
+              <Setup onNavigate={(tab, subView) => {
+                setActive(tab);
+                if (tab === "Settings" && subView) {
+                  setCurrentSettingsView(subView);
+                }
+              }} />
+            </CardBody>
+          </Card>
+        )}
+
+        {active === "Dashboard" && (
+          <>
+            <Card>
+              <CardHeader 
+                title={`Dashboard - ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`}
+                subtitle="Overview of live assistance activity" 
+              />
+              <CardBody>
+                <Dashboard />
+              </CardBody>
+            </Card>
+            <Card>
+              <CardHeader title="Top Responders" subtitle="Leaderboard of fastest and most active associates" />
+              <CardBody>
+                <TopResponders db={db} />
+              </CardBody>
+            </Card>
+          </>
+        )}
+
+        {active === "Insights" && (
+          <Card>
+            {/* Replace old subtitle with InsightsAI below */}
+            <CardHeader title="Insights" subtitle={null} />
+            <CardBody>
+              <div className="flex flex-col md:flex-row gap-3 sm:gap-4 mb-4 sm:mb-6 relative">
+                {/* Stores (scroll ~5 items) */}
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Select Store(s)</label>
+                  <button
+                    type="button"
+                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
+                    onClick={() => setShowStores(v => !v)}
+                  >
+                    {selectedStores.length ? `${selectedStores.length} selected` : "Choose store(s)"}
+                  </button>
+                  {showStores && (
+                    <div
+                      className="flex flex-col gap-1 w-full sm:min-w-[180px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
+                      onMouseLeave={() => setShowStores(false)}
+                    >
+                      {stores.length === 0 && <div className="text-muted">No stores found</div>}
+                      {stores.map((store) => (
+                        <label key={store} className="flex items-center gap-2 cursor-pointer select-none text-primary">
+                          <input
+                            type="checkbox"
+                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
+                            checked={selectedStores.includes(store)}
+                            onChange={() =>
+                              setSelectedStores(prev =>
+                                prev.includes(store) ? prev.filter(s => s !== store) : [...prev, store]
+                              )
+                            }
+                          />
+                          <span>{store}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Areas (scroll, Select All) */}
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Select Area(s)</label>
+                  <button
+                    type="button"
+                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
+                    onClick={() => setShowAreas(v => !v)}
+                  >
+                    {selectedAreas.length ? `${selectedAreas.length} selected` : "Choose area(s)"}
+                  </button>
+                  {showAreas && (
+                    <div
+                      className="flex flex-col gap-1 w-full sm:min-w-[180px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
+                      onMouseLeave={() => setShowAreas(false)}
+                    >
+                      <label className="flex items-center gap-2 cursor-pointer select-none sticky top-0 bg-secondary py-1 border-b border-themed text-primary">
+                        <input
+                          type="checkbox"
+                          className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
+                          checked={allAreasChecked}
+                          onChange={toggleAllAreas}
+                        />
+                        <span className="font-medium">Select All</span>
+                      </label>
+
+                      {filteredAreas.length === 0 && <div className="text-muted">No areas found</div>}
+                      {filteredAreas.map((area) => (
+                        <label key={area} className="flex items-center gap-2 cursor-pointer select-none text-primary">
+                          <input
+                            type="checkbox"
+                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
+                            checked={selectedAreas.includes(area)}
+                            onChange={() =>
+                              setSelectedAreas(prev =>
+                                prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area]
+                              )
+                            }
+                          />
+                          <span>{area}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Weeks (scroll, Select All) */}
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-primary mb-1">Select Week(s)</label>
+                  <button
+                    type="button"
+                    className="rounded border border-themed px-2 py-1 text-left w-full bg-secondary text-primary hover:bg-tertiary mb-1"
+                    onClick={() => setShowWeeks(v => !v)}
+                  >
+                    {selectedWeek.length ? `${selectedWeek.length} selected` : "Choose week(s)"}
+                  </button>
+                  {showWeeks && (
+                    <div
+                      className="flex flex-col gap-1 w-full sm:min-w-[220px] border border-themed rounded bg-secondary shadow p-2 z-20 absolute max-h-48 sm:max-h-40 overflow-y-auto"
+                      onMouseLeave={() => setShowWeeks(false)}
+                    >
+                      <label className="flex items-center gap-2 cursor-pointer select-none sticky top-0 bg-secondary py-1 border-b border-themed text-primary">
+                        <input
+                          type="checkbox"
+                          className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
+                          checked={allWeeksChecked}
+                          onChange={toggleAllWeeks}
+                        />
+                        <span className="font-medium">Select All</span>
+                      </label>
+
+                      {filteredWeeks.length === 0 && <div className="text-muted">No weeks found</div>}
+                      {filteredWeeks.map((week) => (
+                        <label key={week} className="flex items-center gap-2 cursor-pointer select-none text-primary">
+                          <input
+                            type="checkbox"
+                            className="form-checkbox rounded h-4 w-4 text-indigo-600 border-themed bg-primary focus:ring-indigo-500"
+                            checked={selectedWeek.includes(week)}
+                            onChange={() =>
+                              setSelectedWeek(prev =>
+                                prev.includes(week) ? prev.filter(w => w !== week) : [...prev, week]
+                              )
+                            }
+                          />
+                          <span>{week}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* --- Ask Insights AI (replaces old "Analytics and trends" text) --- */}
+              <InsightsAI
+                logs={filteredLogs}
+              />
+
+              {/* Heatmap below (tooltips: add title attr inside Heatmap tiles if not already) */}
+              <div className="mt-6">
+              {logsLoading ? (
+                <div className="flex items-center justify-center py-12 text-muted">Loading data…</div>
+              ) : (
+                <Heatmap
+                  logs={filteredLogs}
+                  selectedStores={selectedStores}
+                  selectedWeek={selectedWeek}
+                  weeks={weeks}
+                  selectedAreas={selectedAreas}
+                />
+              )}
+              </div>
+            </CardBody>
+          </Card>
+        )}
+
+        {active === "Generate QR" && (
+          <Card>
+            <CardHeader title="Generate QR" subtitle="Create a new QR poster" />
+            <CardBody>
+              <GenerateQR />
+            </CardBody>
+          </Card>
+        )}
+
+        {active === "Settings" && (
+          <Card>
+            <CardHeader title="Settings" subtitle="Manage your account and support tickets" />
+            <CardBody>
+              {/* Settings Navigation */}
+              <div className="mb-6">
+                <div className="flex gap-2 border-b border-themed">
+                  {["Account", "My Tickets", "Integrations"].map((view) => (
+                    <button
+                      key={view}
+                      onClick={() => setCurrentSettingsView(view.toLowerCase().replace(" ", "_"))}
+                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
+                        currentSettingsView === view.toLowerCase().replace(" ", "_")
+                          ? "border-indigo-500 text-primary"
+                          : "border-transparent text-secondary hover:text-primary"
+                      }`}
+                    >
+                      {view}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Settings Content */}
+              {currentSettingsView === "account" && (
+                <Settings user={user} />
+              )}
+
+              {currentSettingsView === "my_tickets" && (
+                <MyTickets onCreateTicket={() => setShowContactUs(true)} />
+              )}
+
+              {currentSettingsView === "integrations" && (
+                <div className="space-y-8">
+                  {/* GroupMe setup */}
+                  <GroupMeSetup />
+
+                  {/* Workvivo setup - temporarily disabled */}
+                  {/* <WorkvivoSetup /> */}
+                </div>
+              )}
+            </CardBody>
+          </Card>
+        )}
+
+        {active === "Admin" && isAdmin && (
+          <Card>
+            <CardHeader title="Admin" subtitle="Admin tools and controls" />
+            <CardBody>
+              <div className="text-sm text-secondary mb-4">
+                Welcome, admin user <span className="font-mono">sinaptick@gmail.com</span>.
+              </div>
+              
+              {/* Admin Navigation */}
+              <div className="mb-6">
+                <div className="flex gap-2 border-b border-themed">
+                  {["Overview", "Support Tickets", "User Management", "Spam Protection"].map((view) => (
+                    <button
+                      key={view}
+                      onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
+                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
+                        currentAdminView === view.toLowerCase().replace(" ", "_")
+                          ? "border-indigo-500 text-primary"
+                          : "border-transparent text-secondary hover:text-primary"
+                      }`}
+                    >
+                      {view}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Admin Content */}
+              {currentAdminView === "overview" && (
+                <div className="space-y-6">
+                  <div className="text-sm text-secondary mb-4">
+                    Quick overview of system status and recent activity.
+                  </div>
+                  <UnapprovedUsersList db={db} />
+                  <PendingChangesList db={db} />
+                </div>
+              )}
+
+              {currentAdminView === "support_tickets" && (
+                <TicketQueue />
+              )}
+
+              {currentAdminView === "user_management" && (
+                <div className="space-y-6">
+                  <UserStatusSearch db={db} />
+                  <UnapprovedUsersList db={db} />
+                </div>
+              )}
+
+              {currentAdminView === "spam_protection" && (
+                <BlockedIPsManager />
+              )}
+            </CardBody>
+          </Card>
+        )}
       </main>
       
       {/* Contact Us Link - Always visible at bottom */}
@@ -2517,7 +1828,95 @@ function Shell({ user, onSignOut }) {
 // -----------------------------
 // 🏁 Landing Page (Sign in / Register)
 // -----------------------------
-// Landing component moved to components/layout/LandingPage.jsx
+function Landing() {
+  const [mode, setMode] = useState("signin");
+  return (
+    <div className="min-h-screen gradient-bg flex items-center justify-center p-6">
+      <div className="absolute inset-x-0 top-0 p-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center justify-center">
+            <QRLockIcon className="h-9 w-9 text-blue-600" />
+          </div>
+          <div className="text-lg font-semibold text-primary">QRcallbox</div>
+        </div>
+        <div className="text-sm text-secondary hidden md:block">Scan • Notify • Assist</div>
+      </div>
+      <div className="w-full max-w-5xl mx-auto">
+        {/* Feature Flow */}
+        <div className="text-center mb-12 px-4">
+          <div className="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-8 mb-8">
+            <div className="flex flex-col items-center gap-3 opacity-75 max-w-xs">
+              <div className="w-10 h-10 rounded-full bg-blue-600/20 flex items-center justify-center">
+                <span className="text-xl">📱</span>
+              </div>
+              <div className="text-center">
+                <div className="text-sm font-medium text-muted mb-1">SCAN</div>
+                <div className="text-xs text-muted/70">Customers scan QR codes for instant help requests</div>
+              </div>
+            </div>
+            <div className="text-muted text-lg hidden md:block">→</div>
+            <div className="flex flex-col items-center gap-3 opacity-75 max-w-xs">
+              <div className="w-10 h-10 rounded-full bg-blue-600/20 flex items-center justify-center">
+                <span className="text-xl">🔔</span>
+              </div>
+              <div className="text-center">
+                <div className="text-sm font-medium text-muted mb-1">NOTIFY</div>
+                <div className="text-xs text-muted/70">Staff receive real-time alerts with location details</div>
+              </div>
+            </div>
+            <div className="text-muted text-lg hidden md:block">→</div>
+            <div className="flex flex-col items-center gap-3 opacity-75 max-w-xs">
+              <div className="w-10 h-10 rounded-full bg-blue-600/20 flex items-center justify-center">
+                <span className="text-xl">🤝</span>
+              </div>
+              <div className="text-center">
+                <div className="text-sm font-medium text-muted mb-1">ASSIST</div>
+                <div className="text-xs text-muted/70">Provide immediate help and track response times</div>
+              </div>
+            </div>
+          </div>
+          
+          {/* Key Features */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs opacity-60 max-w-2xl mx-auto">
+            <div className="flex flex-col items-center gap-2 text-center">
+              <span className="text-blue-400 text-lg">📊</span>
+              <div>
+                <div className="font-medium text-muted mb-1">Heatmap Analytics</div>
+                <div className="text-muted/70">Visualize help request patterns across locations</div>
+              </div>
+            </div>
+            <div className="flex flex-col items-center gap-2 text-center">
+              <span className="text-blue-400 text-lg">⚡</span>
+              <div>
+                <div className="font-medium text-muted mb-1">Response Tracking</div>
+                <div className="text-muted/70">Monitor team performance and response metrics</div>
+              </div>
+            </div>
+            <div className="flex flex-col items-center gap-2 text-center">
+              <span className="text-blue-400 text-lg">🧠</span>
+              <div>
+                <div className="font-medium text-muted mb-1">Smart Insights</div>
+                <div className="text-muted/70">Get AI-powered recommendations to improve service</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Centered Sign-in Form */}
+        <div className="flex justify-center">
+          {mode === "signin" ? (
+            <SignInForm onSwitch={() => setMode("register")} />
+          ) : (
+            <RegisterForm onSwitch={() => setMode("signin")} />
+          )}
+        </div>
+      </div>
+      <footer className="absolute bottom-0 inset-x-0 p-6 text-center text-xs text-muted">
+        © {new Date().getFullYear()} QRcallbox.com
+      </footer>
+    </div>
+  );
+}
 
 // -----------------------------
 // App Root
@@ -2579,7 +1978,7 @@ function AppInner() {
     );
   }
 
-  if (!user) return <LandingPage />;
+  if (!user) return <Landing />;
 
   const handleTermsAccept = () => {
     setShowTerms(false);
@@ -2615,9 +2014,6 @@ function AppInner() {
   );
 }
 
-// Export components for use in other files
-export { Dashboard, TopResponders, GenerateQR, Settings };
-
 export default function App() {
   return (
     <ThemeProvider>
@@ -2645,3 +2041,4 @@ function mapAuthError(err) {
   if (code.includes("too-many-requests")) return "Too many attempts. Try again later.";
   return err?.message || "Something went wrong.";
 }
+
