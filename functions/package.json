@@ -11,8 +11,9 @@
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.5",
+    "@sparticuz/chromium": "^131.0.0",
     "firebase-admin": "^13.4.0",
     "firebase-functions": "^6.4.0",
-    "puppeteer": "^24.9.0"
+    "puppeteer-core": "^23.6.0"
   }
 }

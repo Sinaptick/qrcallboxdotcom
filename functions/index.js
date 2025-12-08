@@ -1,11 +1,15 @@
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
+import { getStorage } from "firebase-admin/storage";
 
-import { onRequest } from "firebase-functions/v2/https";
+import { onRequest, onCall, HttpsError } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
+import { beforeUserCreated } from "firebase-functions/v2/identity";
 import * as logger from "firebase-functions/logger";
 import { defineSecret } from "firebase-functions/params";
+import sgMail from "@sendgrid/mail";
 
 // Import webhook handler and automation functions
 export { groupmeWebhook } from './groupme-webhook.js';
@@ -14,6 +18,7 @@ export { groupmeWebhook } from './groupme-webhook.js';
 // export { workvivoMonitor } from './workvivo-monitor.js';
 export { submitTicket, getTickets, getMyTickets, getTicketDetails, respondToTicket, handleEmailReply, lookupTicket, updateTicketPriority } from './tickets.js';
 export { monitorStoresWithoutBots, monitorBotDeletions, checkBotsManually } from './bot-monitor.js';
+export { logScanMetrics } from './metrics-logger.js';
 // import { postToWorkvivo } from './workvivo-automation.js';
 
 // ===== Secrets (set with `firebase functions:secrets:set ...`) =====
@@ -24,6 +29,7 @@ const API_KEY = defineSecret("API_KEY");
 // ===== Admin SDK =====
 initializeApp();
 const db = getFirestore();
+const storage = getStorage();
 
 // Your deployed base URL/route you registered in GroupMe app settings
 const REGION = "us-central1";
@@ -34,8 +40,10 @@ const BASE_CALLBACK = "https://groupmecallback-46us5rurra-uc.a.run.app";
 const ALLOWED_ORIGINS = [
   "https://qrcallbox.com",
   "https://www.qrcallbox.com",
-  "https://qrwebaccdb.web.app", 
+  "https://qrwebaccdb.web.app",
   "https://qrwebaccdb.firebaseapp.com",
+  "https://managerchecklist.web.app", // checklist app
+  "https://managerchecklist.firebaseapp.com",
   "http://localhost:5173", // for development
   "http://localhost:4173"  // for preview
 ];
@@ -70,12 +78,20 @@ async function authenticateUser(req) {
   }
 }
 
-// Check if user is admin
+// Check if user is admin (using Custom Claims for security)
 async function isAdmin(uid) {
   try {
+    const user = await getAuth().getUser(uid);
+    // Check custom claim first (secure, server-side only)
+    if (user.customClaims?.admin === true) {
+      return true;
+    }
+    // Fallback to database check for backwards compatibility
+    // TODO: Remove this after all admins have custom claims set
     const userDoc = await db.collection('users').doc(uid).get();
     return userDoc.exists && userDoc.data().email === 'sinaptick@gmail.com';
   } catch (error) {
+    logger.error('Error checking admin status:', error);
     return false;
   }
 }
@@ -177,6 +193,32 @@ async function checkRateLimit(ip, maxRequests = 10, windowMs = 60000) {
   rateLimitStore.set(ip, validRequests);
   return { allowed: true };
 }
+
+// ===== Block Google Sign-In =====
+// This blocking function prevents users from creating accounts with Google
+export const blockGoogleSignIn = beforeUserCreated((event) => {
+  const user = event.data;
+
+  // Check if user is signing in with Google
+  const isGoogleProvider = user.providerData?.some(
+    provider => provider.providerId === 'google.com'
+  );
+
+  if (isGoogleProvider) {
+    logger.warn('Blocked Google sign-in attempt', {
+      email: user.email,
+      uid: user.uid
+    });
+
+    throw new HttpsError(
+      'permission-denied',
+      'Google sign-in is currently disabled. Please create an account using email and password.'
+    );
+  }
+
+  // Allow non-Google sign-ins to proceed
+  return;
+});
 
 // ===== 1) Start OAuth: redirect user to GroupMe authorize =====
 export const groupmeStart = onRequest(
@@ -2178,7 +2220,11 @@ export const s = onRequest({
       claimedBy: "",
       claimedByName: "",
       claimedAt: null,
-      resolvedAt: null
+      resolvedAt: null,
+      notificationsSentAt: FieldValue.serverTimestamp(),
+      eligibleUsers: [], // Will be populated by sendAndroidNotification
+      timeoutProcessed: false,
+      secondaryAlertSent: false
     };
     
     const scanDoc = await db.collection("scans").add(scanRecord);
@@ -2238,6 +2284,62 @@ export const s = onRequest({
   }
 });
 
+// ===== Helper: Check if user is currently on shift =====
+function isUserOnShift(userData) {
+  const userName = userData.firstName || userData.email || "Unknown";
+  
+  if (!userData.notificationsEnabled) {
+    logger.info(`User ${userName}: notifications disabled`);
+    return false;
+  }
+
+  const workSchedule = userData.workSchedule;
+  if (!workSchedule) {
+    // If no schedule is set, assume user wants all notifications
+    logger.info(`User ${userName}: no work schedule set, allowing notification`);
+    return true;
+  }
+
+  // Get user's timezone (default to America/New_York for now, but can be stored per user)
+  const userTimezone = userData.timezone || "America/New_York";
+  
+  // Convert UTC time to user's local time
+  const now = new Date();
+  const userLocalTime = new Date(now.toLocaleString("en-US", {timeZone: userTimezone}));
+  const dayOfWeek = userLocalTime.getDay(); // 0 = Sunday, 1 = Monday, etc.
+  const hour = userLocalTime.getHours();
+  const minute = userLocalTime.getMinutes();
+
+  // Map JavaScript day (0=Sunday) to our schedule format (lowercase to match frontend)
+  const dayName = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][dayOfWeek];
+  const daySchedule = workSchedule[dayName];
+
+  logger.info(`User ${userName}: checking ${dayName} schedule at ${hour}:${String(minute).padStart(2, '0')} (${userTimezone}) - UTC: ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`);
+
+  if (!daySchedule || !daySchedule.isWorkingDay) {
+    logger.info(`User ${userName}: not working on ${dayName}`);
+    return false;
+  }
+
+  // Check if current time is within working hours
+  const startHour = parseInt(daySchedule.startHour) || 0;
+  const startMinute = parseInt(daySchedule.startMinute) || 0;
+  const endHour = parseInt(daySchedule.endHour) || 23;
+  const endMinute = parseInt(daySchedule.endMinute) || 59;
+
+  const currentMinutes = hour * 60 + minute;
+  const startMinutes = startHour * 60 + startMinute;
+  const endMinutes = endHour * 60 + endMinute;
+
+  const isOnShift = currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+  const startTime = `${String(startHour).padStart(2, '0')}:${String(startMinute).padStart(2, '0')}`;
+  const endTime = `${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
+  
+  logger.info(`User ${userName}: ${dayName} shift ${startTime}-${endTime} (${userTimezone}), currently ${isOnShift ? 'ON' : 'OFF'} shift`);
+  
+  return isOnShift;
+}
+
 // ===== Helper: Send GroupMe notification =====
 async function sendGroupMeNotification(store, area) {
   try {
@@ -2253,16 +2355,31 @@ async function sendGroupMeNotification(store, area) {
     
     for (const botDoc of botsSnapshot.docs) {
       const botData = botDoc.data();
-      
+
+      // Check if bot owner wants notifications for this area
+      // DEFAULT BEHAVIOR: Empty/missing notificationAreas = receive ALL areas
+      // FILTERED BEHAVIOR: If notificationAreas has values, only send for matching areas
+      const botOwnerDoc = await db.collection("users").doc(botData.firebase_uid).get();
+      if (botOwnerDoc.exists) {
+        const botOwnerData = botOwnerDoc.data();
+        const notificationAreas = botOwnerData.notificationAreas || [];
+
+        // If bot owner has area preferences, respect them
+        if (notificationAreas.length > 0 && !notificationAreas.includes(area)) {
+          logger.info(`Skipping GroupMe bot ${botData.bot_id}: owner filtered out area '${area}' (preferences: [${notificationAreas.join(', ')}])`);
+          continue;
+        }
+      }
+
       // Get the user's token to send message
       const tokenDoc = await db.collection("groupme_tokens").doc(botData.user_id).get();
       if (!tokenDoc.exists) continue;
-      
+
       // Use local time zone (assuming PST/PDT for your location)
       const now = new Date();
       const localTime = new Date(now.getTime() - (4 * 60 * 60 * 1000)); // Subtract 4 hours to convert from UTC to PDT
       const message = `Store ${sanitizeInput(store, 10)}: Customer assistance needed in ${sanitizeInput(area, 50)} at ${localTime.toLocaleTimeString()}`;
-      
+
       // Send message via bot
       const postResponse = await fetch("https://api.groupme.com/v3/bots/post", {
         method: "POST",
@@ -2428,6 +2545,117 @@ export const debugDataTypes = onRequest(
   }
 );
 
+// ===== Work Device Auto-Fix endpoint =====
+export const autoFixWorkDevice = onRequest(
+  { 
+    region: REGION,
+    cors: { origin: ALLOWED_ORIGINS },
+    timeoutSeconds: 60
+  },
+  async (req, res) => {
+    try {
+      const { userId, deviceInfo, fcmToken } = req.body;
+      
+      if (!userId || !fcmToken) {
+        return res.status(400).json({ 
+          error: "Missing required fields: userId, fcmToken" 
+        });
+      }
+      
+      logger.info("🔧 Work device auto-fix requested", { 
+        userId, 
+        deviceInfo: deviceInfo || "unknown",
+        fcmTokenPreview: fcmToken.substring(0, 20) + "..."
+      });
+      
+      // Detect work-managed device
+      const workIndicators = ["airwatch", "vmware", "workspace", "intune", "knox", "managed", "enterprise"];
+      const isWorkDevice = deviceInfo && workIndicators.some(indicator => 
+        deviceInfo.toLowerCase().includes(indicator)
+      );
+      
+      if (!isWorkDevice) {
+        return res.json({
+          success: true,
+          message: "Standard device - no fix needed",
+          fixApplied: false
+        });
+      }
+      
+      // Apply server-side fixes
+      await firestore.collection('users').doc(userId).update({
+        fcmToken: fcmToken,
+        fcmTokenUpdatedAt: FieldValue.serverTimestamp(),
+        deviceType: 'work-managed',
+        deviceInfo: deviceInfo,
+        notificationFixApplied: true,
+        workDeviceMetadata: {
+          bypassAttempted: true,
+          bypassTimestamp: FieldValue.serverTimestamp(),
+          method: 'server-side-auto-fix'
+        }
+      });
+      
+      // Add to work device whitelist for enhanced notifications
+      await firestore.collection('work_device_whitelist').doc(userId).set({
+        fcmToken: fcmToken,
+        deviceInfo: deviceInfo,
+        whitelistedAt: FieldValue.serverTimestamp(),
+        status: 'active'
+      });
+      
+      // Send test notification with max priority
+      const testMessage = {
+        token: fcmToken,
+        notification: {
+          title: "🔧 QRCallBox Work Device Fix",
+          body: "✅ Notifications are now working! Auto-fix successful."
+        },
+        data: {
+          type: "work_device_test",
+          userId: userId,
+          timestamp: Date.now().toString()
+        },
+        android: {
+          priority: "high",
+          notification: {
+            channelId: "customer_assistance",
+            priority: "max",
+            defaultSound: true,
+            defaultVibrateTimings: true
+          }
+        }
+      };
+      
+      const testResult = await messaging.send(testMessage);
+      
+      logger.info("✅ Work device auto-fix completed", {
+        userId,
+        testMessageId: testResult
+      });
+      
+      res.json({
+        success: true,
+        message: "Work device auto-fix completed successfully",
+        fixApplied: true,
+        testNotificationSent: true,
+        details: {
+          whitelisted: true,
+          enhancedPriority: true,
+          testMessageId: testResult
+        }
+      });
+      
+    } catch (error) {
+      logger.error("❌ Work device auto-fix failed", error);
+      res.status(500).json({ 
+        error: "Auto-fix failed",
+        message: "Server-side fix encountered an error"
+      });
+    }
+  }
+);
+
 // ===== App version check endpoint =====
 export const getAppVersion = onRequest(
   { 
@@ -2437,14 +2665,14 @@ export const getAppVersion = onRequest(
   async (req, res) => {
     try {
       const versionInfo = {
-        latestVersion: "1.7.22",
-        versionCode: 36,
-        downloadUrl: "https://qrwebaccdb.web.app/app/QRCallBox-debug-v1.7.22.apk",
-        releaseNotes: "✨ Complete UI Polish: Perfect header alignment with QRCallBox title, welcome message, and menu. Condensed Settings layout fits everything on one screen. Fixed Wednesday text wrapping. Professional design with optimal spacing throughout.",
+        latestVersion: "1.8.1",
+        versionCode: 51,
+        downloadUrl: "https://qrwebaccdb.web.app/app/QRCallBox-debug-v1.8.1.apk",
+        releaseNotes: "🐛 BUG FIX: Fixed leaderboard crash caused by theme compatibility issue. The leaderboard now displays properly without crashing the app.",
         isForceUpdate: false,
         minimumSupportedVersion: "1.0"
       };
-      
+
       res.json(versionInfo);
     } catch (error) {
       logger.error("Error in getAppVersion:", error);
@@ -2453,53 +2681,168 @@ export const getAppVersion = onRequest(
   }
 );
 
+// ===== Send urgent update notification to all users =====
+export const sendUpdateNotification = onRequest(
+  { 
+    region: REGION,
+    cors: { origin: ALLOWED_ORIGINS }
+  },
+  async (req, res) => {
+    try {
+      logger.info("🚨 Sending urgent update notification to all users");
+      
+      // Get all users with FCM tokens
+      const usersSnapshot = await db.collection("users")
+        .where("fcmToken", "!=", "")
+        .get();
+      
+      if (usersSnapshot.empty) {
+        logger.warn("No users found with FCM tokens");
+        return res.json({ success: false, message: "No users with FCM tokens found" });
+      }
+      
+      const tokens = [];
+      const userCount = usersSnapshot.size;
+      
+      usersSnapshot.forEach(doc => {
+        const user = doc.data();
+        if (user.fcmToken && user.fcmToken.trim() !== "") {
+          tokens.push(user.fcmToken);
+        }
+      });
+      
+      if (tokens.length === 0) {
+        logger.warn("No valid FCM tokens found");
+        return res.json({ success: false, message: "No valid FCM tokens found" });
+      }
+      
+      logger.info(`Found ${tokens.length} FCM tokens for ${userCount} users`);
+      
+      // Create the urgent update notification
+      const message = {
+        notification: {
+          title: "🚨 CRITICAL APP UPDATE REQUIRED",
+          body: "Push notifications are broken in your current version. Update immediately to receive customer assistance alerts."
+        },
+        data: {
+          type: "urgent_update",
+          version: "1.7.25",
+          downloadUrl: "https://qrwebaccdb.web.app/app/QRCallBox-debug-v1.7.25.apk",
+          isForceUpdate: "true"
+        },
+        android: {
+          priority: "high",
+          notification: {
+            priority: "max",
+            visibility: "public",
+            channel_id: "customer_assistance",
+            color: "#FF0000",
+            icon: "ic_launcher_foreground",
+            sound: "default",
+            clickAction: "OPEN_UPDATE_DIALOG"
+          }
+        }
+      };
+      
+      // Send to all tokens in batches (FCM limit is 500 per batch)
+      const batchSize = 500;
+      let successCount = 0;
+      let failureCount = 0;
+      
+      for (let i = 0; i < tokens.length; i += batchSize) {
+        const batch = tokens.slice(i, i + batchSize);
+        
+        try {
+          logger.info(`Sending batch ${Math.floor(i/batchSize) + 1} with ${batch.length} tokens`);
+          
+          const response = await getMessaging().sendMulticast({
+            ...message,
+            tokens: batch
+          });
+          
+          successCount += response.successCount;
+          failureCount += response.failureCount;
+          
+          if (response.failureCount > 0) {
+            logger.warn(`Batch had ${response.failureCount} failures`);
+            response.responses.forEach((resp, idx) => {
+              if (!resp.success) {
+                logger.warn(`Token ${batch[idx]} failed: ${resp.error?.message}`);
+              }
+            });
+          }
+          
+        } catch (error) {
+          logger.error(`Error sending batch ${Math.floor(i/batchSize) + 1}:`, error);
+          failureCount += batch.length;
+        }
+      }
+      
+      logger.info(`Update notification sent: ${successCount} successes, ${failureCount} failures`);
+      
+      res.json({
+        success: true,
+        message: "Urgent update notification sent to all users",
+        stats: {
+          totalUsers: userCount,
+          validTokens: tokens.length,
+          successCount,
+          failureCount
+        }
+      });
+      
+    } catch (error) {
+      logger.error("Error sending update notification:", error);
+      res.status(500).json({ error: "Failed to send update notification" });
+    }
+  }
+);
+
 // ===== Helper: Send Android FCM notification =====
+// This function sends notifications to users who are actively monitoring a store.
+// It checks activeStore first (for users with store switching), then falls back
+// to storeNumber for backward compatibility with older app versions.
 async function sendAndroidNotification(store, area, scanId = null) {
   try {
     logger.info(`Starting Android notification for store ${store}, area ${area}`);
-    
-    // Get all users for the specific store who have FCM tokens
-    // Try multiple possible field names for store assignment
-    logger.info(`Querying for users with store ${store}...`);
-    
+
+    // Query users who have this store as their ACTIVE monitoring store
+    // This respects the user's current store selection in the app
+    logger.info(`Querying for users with activeStore=${store}...`);
+
     let usersSnapshot = await db.collection("users")
-      .where("storeNumber", "==", parseInt(store))
+      .where("activeStore", "==", parseInt(store))
       .get();
-    
+
     if (usersSnapshot.empty) {
-      logger.info(`No users found with storeNumber=${store} (number). Trying string...`);
+      logger.info(`No users with activeStore=${store} (number). Trying string...`);
       usersSnapshot = await db.collection("users")
-        .where("storeNumber", "==", String(store))
+        .where("activeStore", "==", String(store))
         .get();
     }
-    
+
+    // Fallback: If no users have activeStore set, use primary storeNumber
+    // This ensures backwards compatibility with existing users and app versions
     if (usersSnapshot.empty) {
-      logger.info(`No users found with storeNumber=${store} (string). Trying homeStore...`);
+      logger.info(`No users with activeStore=${store}. Falling back to storeNumber for backward compatibility...`);
       usersSnapshot = await db.collection("users")
-        .where("homeStore", "==", String(store))
+        .where("storeNumber", "==", parseInt(store))
         .get();
+
+      if (usersSnapshot.empty) {
+        logger.info(`No users with storeNumber=${store} (number). Trying string...`);
+        usersSnapshot = await db.collection("users")
+          .where("storeNumber", "==", String(store))
+          .get();
+      }
     }
-    
+
     if (usersSnapshot.empty) {
-      logger.info(`No users found with homeStore=${store}. Trying allowedStores array...`);
-      usersSnapshot = await db.collection("users")
-        .where("allowedStores", "array-contains", parseInt(store))
-        .get();
-    }
-    
-    if (usersSnapshot.empty) {
-      logger.info(`No users found with allowedStores containing ${store} (number). Trying string...`);
-      usersSnapshot = await db.collection("users")
-        .where("allowedStores", "array-contains", String(store))
-        .get();
-    }
-    
-    if (usersSnapshot.empty) {
-      logger.info(`No users found for store ${store}`);
+      logger.info(`No users found actively monitoring store ${store}`);
       return;
     }
     
-    logger.info(`Found ${usersSnapshot.docs.length} users for store ${store}, checking for FCM tokens...`);
+    logger.info(`Found ${usersSnapshot.docs.length} users for store ${store}, checking FCM tokens and shift status...`);
     
     // Create notification payload
     const actualScanId = scanId || `test-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -2526,46 +2869,126 @@ async function sendAndroidNotification(store, area, scanId = null) {
         responses: [],
         claimedBy: null,
         claimedByName: null,
-        claimedAt: null
+        claimedAt: null,
+        notificationsSentAt: FieldValue.serverTimestamp(),
+        eligibleUsers: [], // Will be populated with users who received notifications
+        timeoutProcessed: false,
+        secondaryAlertSent: false
       });
     }
     
-    // Send notification to each user with FCM token
+    // Send notification to each user with FCM token who is currently on shift
     const tokens = [];
     const validUsers = [];
-    
+
     for (const userDoc of usersSnapshot.docs) {
       const userData = userDoc.data();
-      if (userData.fcmToken && userData.fcmToken.length > 10) {
-        tokens.push(userData.fcmToken);
-        validUsers.push({
-          uid: userDoc.id,
-          name: userData.firstName || userData.fullName || "Unknown",
-          token: userData.fcmToken
+      const userName = userData.firstName || userData.email || userDoc.id;
+
+      // Enhanced debugging for store 2988
+      if (store == "2988") {
+        logger.info(`🔍 STORE 2988 DEBUG - User: ${userName}, Email: ${userData.email}`);
+        logger.info(`🔍 FCM Tokens: ${userData.fcmTokens ? JSON.stringify(userData.fcmTokens.map(t => ({platform: t.platform, device: t.deviceName}))) : 'None'}`);
+        logger.info(`🔍 Legacy Token: ${userData.fcmToken ? 'Present (' + userData.fcmToken.length + ' chars)' : 'Missing'}`);
+        logger.info(`🔍 Notifications Enabled: ${userData.notificationsEnabled}`);
+        logger.info(`🔍 Work Schedule: ${JSON.stringify(userData.workSchedule)}`);
+      }
+
+      // Check if user is currently on shift before processing tokens
+      const onShift = isUserOnShift(userData);
+      if (!onShift) {
+        logger.info(`❌ User ${userName} not on shift, skipping notification`);
+        continue;
+      }
+
+      // Check area preferences
+      const notificationAreas = userData.notificationAreas || [];
+      const wantsNotificationForArea = notificationAreas.length === 0 || notificationAreas.includes(area);
+      if (!wantsNotificationForArea) {
+        logger.info(`❌ User ${userName} filtered out: area '${area}' not in their notification preferences [${notificationAreas.join(', ')}]`);
+        continue;
+      }
+
+      // NEW: Multi-device token support - send to ALL user's devices
+      const userTokens = [];
+
+      // First, check for new fcmTokens array (multi-device)
+      if (userData.fcmTokens && Array.isArray(userData.fcmTokens) && userData.fcmTokens.length > 0) {
+        for (const tokenEntry of userData.fcmTokens) {
+          if (tokenEntry.token && tokenEntry.token.length > 10) {
+            userTokens.push({
+              token: tokenEntry.token,
+              platform: tokenEntry.platform || 'unknown',
+              deviceName: tokenEntry.deviceName || 'Unknown Device'
+            });
+          }
+        }
+        logger.info(`✅ User ${userName} has ${userTokens.length} device(s): ${userTokens.map(t => `${t.platform} (${t.deviceName})`).join(', ')}`);
+      }
+      // Fallback to legacy single fcmToken for backward compatibility
+      else if (userData.fcmToken && userData.fcmToken.length > 10) {
+        userTokens.push({
+          token: userData.fcmToken,
+          platform: 'unknown',
+          deviceName: 'Legacy Device'
         });
+        logger.info(`✅ User ${userName} using legacy single token (1 device)`);
+      }
+
+      // Add all user tokens to notification list
+      if (userTokens.length > 0) {
+        for (const userToken of userTokens) {
+          tokens.push(userToken.token);
+          validUsers.push({
+            uid: userDoc.id,
+            name: userData.firstName || userData.fullName || "Unknown",
+            token: userToken.token,
+            platform: userToken.platform,
+            device: userToken.deviceName
+          });
+        }
+        logger.info(`✅ User ${userName} added to notification list (on shift, area match, ${userTokens.length} device(s))`);
+      } else {
+        logger.info(`❌ User ${userName} has no valid FCM tokens`);
       }
     }
     
     if (tokens.length === 0) {
-      logger.info(`No valid FCM tokens found for store ${store}`);
+      logger.info(`No on-shift users with valid FCM tokens found for store ${store}`);
       return;
     }
     
-    logger.info(`Found ${tokens.length} FCM tokens for store ${store}`);
+    logger.info(`Found ${tokens.length} on-shift users with FCM tokens for store ${store}`);
     
     // Send to each token individually (more reliable than multicast)
     let successCount = 0;
     
     for (const token of tokens) {
       try {
+        // DATA-ONLY message - Forces onMessageReceived() to be called even when app is closed
+        // This bypasses Android's auto-display mechanism which was failing on some Samsung devices
         const message = {
           data: notificationData,
           android: {
-            priority: "high"
+            priority: "high",
+            ttl: 3600 // Keep message alive for 1 hour if device offline
+          },
+          apns: {
+            payload: {
+              aps: {
+                alert: {
+                  title: notificationData.title,
+                  body: notificationData.body
+                },
+                sound: "default",
+                badge: 1,
+                category: "ASSISTANCE_REQUEST"
+              }
+            }
           },
           token: token
         };
-        
+
         await getMessaging().send(message);
         successCount++;
         logger.info(`FCM sent successfully to token ${token.substring(0, 20)}...`);
@@ -2574,13 +2997,76 @@ async function sendAndroidNotification(store, area, scanId = null) {
       }
     }
     
+    // Send to FCM topic for better corporate firewall penetration
+    // This complements individual token delivery
+    // DATA-ONLY message - Forces onMessageReceived() to be called even when app is closed
+    try {
+      const topicMessage = {
+        data: notificationData,
+        android: {
+          priority: "high",
+          ttl: 3600
+        },
+        apns: {
+          payload: {
+            aps: {
+              alert: {
+                title: notificationData.title,
+                body: notificationData.body
+              },
+              sound: "default",
+              badge: 1,
+              category: "ASSISTANCE_REQUEST"
+            }
+          }
+        },
+        topic: `store-${store}` // All users subscribed to this store receive it
+      };
+
+      await getMessaging().send(topicMessage);
+      logger.info(`📢 DATA-ONLY topic notification sent to store-${store} (app handles display)`);
+    } catch (error) {
+      logger.error(`Failed to send topic notification to store-${store}:`, error);
+    }
+
+    // Update scan document with eligible users for timeout tracking
+    if (validUsers.length > 0) {
+      try {
+        await db.collection("scans").doc(actualScanId).update({
+          eligibleUsers: validUsers.map(user => ({
+            uid: user.uid,
+            name: user.name,
+            notifiedAt: FieldValue.serverTimestamp(),
+            responded: false,
+            responseType: null // Will be 'assist', 'ignore', or 'timeout'
+          }))
+        });
+        logger.info(`✅ Updated scan ${actualScanId} with ${validUsers.length} eligible users for timeout tracking`);
+      } catch (error) {
+        logger.error(`❌ CRITICAL: Failed to update scan ${actualScanId} with eligible users:`, {
+          error: error.message,
+          code: error.code,
+          scanId: actualScanId,
+          validUsersCount: validUsers.length,
+          validUsers: validUsers.map(u => ({ uid: u.uid, name: u.name }))
+        });
+      }
+    } else {
+      logger.warn(`⚠️ No eligible users found for scan ${actualScanId} at store ${store}`, {
+        totalUsersFound: usersSnapshot.docs.length,
+        usersWithTokens: usersSnapshot.docs.filter(doc => doc.data().fcmToken).length,
+        usersOnShift: 0
+      });
+    }
+
     logger.info("Android FCM notification completed", {
       store,
       area,
-      scanId,
+      scanId: actualScanId,
       totalTokens: tokens.length,
       successCount: successCount,
-      failureCount: tokens.length - successCount
+      failureCount: tokens.length - successCount,
+      eligibleUsers: validUsers.length
     });
     
   } catch (e) {
@@ -2932,6 +3418,201 @@ export const groupmeAdminLookupStore = onRequest({
     
   } catch (error) {
     logger.error("Admin store lookup error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin GroupMe Email Lookup =====
+export const groupmeAdminLookupEmail = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+
+    const { email } = req.body;
+    if (!email) return res.status(400).send("Missing email");
+
+    // Normalize email to lowercase for case-insensitive search
+    const emailLower = email.toLowerCase().trim();
+
+    // Require at least 3 characters for partial search to avoid fetching too many users
+    if (emailLower.length < 3) {
+      return res.status(400).send("Email search requires at least 3 characters");
+    }
+
+    logger.info("Admin looking up user by email (partial match)", {
+      email: emailLower,
+      admin: decodedToken.uid
+    });
+
+    // For partial email matching, we need to fetch all users and filter server-side
+    // This is necessary because Firestore doesn't support LIKE queries
+    // Always do a full scan with substring matching for reliability (handles case issues)
+    logger.info("Fetching all users for substring email match");
+    const allSnapshot = await db.collection("users").limit(1000).get();
+
+    const allUsers = new Map();
+
+    allSnapshot.docs.forEach(doc => {
+      const userData = doc.data();
+      const userEmail = (userData.email || '').toLowerCase();
+
+      // Check if email contains the search term (case-insensitive)
+      if (userEmail.includes(emailLower)) {
+        allUsers.set(doc.id, {
+          id: doc.id,
+          firstName: userData.firstName || '',
+          lastName: userData.lastName || '',
+          email: userData.email || '',
+          jobTitle: userData.jobTitle || '',
+          storeNumber: userData.storeNumber || '',
+          homeStore: userData.homeStore || '',
+          allowedStores: userData.allowedStores || [],
+          groupme_user_id: null // Will be populated below
+        });
+      }
+    });
+
+    // Get GroupMe user IDs for each user
+    for (const [userId, userData] of allUsers.entries()) {
+      try {
+        const tokenSnapshot = await db.collection("groupme_tokens")
+          .where("firebase_uid", "==", userId)
+          .get();
+
+        if (!tokenSnapshot.empty) {
+          const tokenDoc = tokenSnapshot.docs[0];
+          const tokenData = tokenDoc.data();
+          userData.groupme_user_id = tokenData.user_id;
+        }
+      } catch (error) {
+        logger.warn(`Failed to get GroupMe token for user ${userId}`, { error: error.message });
+      }
+    }
+
+    const users = Array.from(allUsers.values());
+
+    logger.info("Email lookup completed", {
+      email: emailLower,
+      users_found: users.length,
+      users_with_groupme: users.filter(u => u.groupme_user_id).length
+    });
+
+    res.json({ users });
+
+  } catch (error) {
+    logger.error("Admin email lookup error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin GroupMe Name Lookup =====
+export const groupmeAdminLookupName = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+
+    const { name } = req.body;
+    if (!name) return res.status(400).send("Missing name");
+
+    // Normalize name to lowercase for case-insensitive search
+    const nameLower = name.toLowerCase().trim();
+
+    if (nameLower.length < 2) {
+      return res.status(400).send("Name search must be at least 2 characters");
+    }
+
+    logger.info("Admin looking up user by name", {
+      name: nameLower,
+      admin: decodedToken.uid
+    });
+
+    // Get all users to search through
+    const allSnapshot = await db.collection("users").get();
+    const allUsers = new Map();
+
+    allSnapshot.docs.forEach(doc => {
+      const userData = doc.data();
+      const firstName = (userData.firstName || '').toLowerCase();
+      const lastName = (userData.lastName || '').toLowerCase();
+      const fullName = `${firstName} ${lastName}`.trim();
+
+      // Check if first name, last name, or full name contains the search term (case-insensitive)
+      if (firstName.includes(nameLower) || lastName.includes(nameLower) || fullName.includes(nameLower)) {
+        allUsers.set(doc.id, {
+          id: doc.id,
+          firstName: userData.firstName || '',
+          lastName: userData.lastName || '',
+          email: userData.email || '',
+          jobTitle: userData.jobTitle || '',
+          storeNumber: userData.storeNumber || '',
+          homeStore: userData.homeStore || '',
+          allowedStores: userData.allowedStores || [],
+          groupme_user_id: null // Will be populated below
+        });
+      }
+    });
+
+    // Get GroupMe user IDs for each user
+    for (const [userId, userData] of allUsers.entries()) {
+      try {
+        const tokenSnapshot = await db.collection("groupme_tokens")
+          .where("firebase_uid", "==", userId)
+          .get();
+
+        if (!tokenSnapshot.empty) {
+          const tokenDoc = tokenSnapshot.docs[0];
+          const tokenData = tokenDoc.data();
+          userData.groupme_user_id = tokenData.user_id;
+        }
+      } catch (error) {
+        logger.warn(`Failed to get GroupMe token for user ${userId}`, { error: error.message });
+      }
+    }
+
+    const users = Array.from(allUsers.values());
+
+    logger.info("Name lookup completed", {
+      name: nameLower,
+      users_found: users.length,
+      users_with_groupme: users.filter(u => u.groupme_user_id).length
+    });
+
+    res.json({ users });
+
+  } catch (error) {
+    logger.error("Admin name lookup error:", error);
     res.status(500).send("Internal server error: " + error.message);
   }
 });
@@ -3797,8 +4478,9 @@ export const adminUpdateUser = onRequest({
     
     // Validate update fields
     const allowedFields = [
-      'firstName', 'lastName', 'email', 'storeNumber', 'jobTitle', 
-      'role', 'notificationsEnabled', 'respectDoNotDisturb', 'workSchedule'
+      'firstName', 'lastName', 'email', 'storeNumber', 'homeStore', 'allowedStores',
+      'activeStore', 'jobTitle', 'phone', 'role', 'approved',
+      'notificationsEnabled', 'respectDoNotDisturb', 'workSchedule'
     ];
     
     const updateData = {};
@@ -3838,6 +4520,3387 @@ export const adminUpdateUser = onRequest({
     
   } catch (error) {
     logger.error("Admin update user error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin Set User Active Store =====
+export const adminSetUserActiveStore = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+
+    const { user_id, active_store } = req.body;
+    if (!user_id || !active_store) {
+      return res.status(400).send("Missing user_id or active_store");
+    }
+
+    logger.info("Admin setting user active store", {
+      user_id,
+      active_store,
+      admin: decodedToken.uid
+    });
+
+    // Get user to validate they have access to this store
+    const userDoc = await db.collection("users").doc(user_id).get();
+    if (!userDoc.exists) {
+      return res.status(404).send("User not found");
+    }
+
+    const userData = userDoc.data();
+    const storeNumber = userData.storeNumber;
+    const allowedStores = userData.allowedStores || [storeNumber];
+
+    // Validate user has access to the requested store
+    const hasAccess = allowedStores.includes(parseInt(active_store)) ||
+                     allowedStores.includes(String(active_store)) ||
+                     storeNumber === parseInt(active_store) ||
+                     storeNumber === String(active_store);
+
+    if (!hasAccess) {
+      return res.status(403).send(`User does not have access to store ${active_store}. Allowed stores: ${allowedStores.join(', ')}`);
+    }
+
+    // Update active store
+    await db.collection("users").doc(user_id).update({
+      activeStore: active_store,
+      activeStoreUpdatedAt: FieldValue.serverTimestamp()
+    });
+
+    logger.info("User active store updated successfully", {
+      user_id,
+      active_store,
+      admin: decodedToken.uid
+    });
+
+    res.json({
+      success: true,
+      message: `Active store set to ${active_store}`,
+      user_id,
+      active_store
+    });
+
+  } catch (error) {
+    logger.error("Admin set active store error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin Find Users with Blank Store Numbers =====
+export const adminFindBlankStoreUsers = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET" && req.method !== "POST") return res.status(405).send("Use GET or POST");
+
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+
+    logger.info("Admin searching for users with blank store numbers", {
+      admin: decodedToken.uid
+    });
+
+    // Get all users
+    const allUsersSnapshot = await db.collection("users").get();
+
+    const usersWithBlankStores = [];
+
+    // Check each user for missing or blank store numbers
+    allUsersSnapshot.docs.forEach(doc => {
+      const userData = doc.data();
+      const storeNumber = userData.storeNumber;
+      const allowedStores = userData.allowedStores;
+
+      // Check if storeNumber is missing, null, empty string, or undefined
+      const hasBlankStore = !storeNumber ||
+                           storeNumber === '' ||
+                           storeNumber === null ||
+                           storeNumber === undefined;
+
+      // Also check if allowedStores is missing or empty
+      const hasNoAllowedStores = !allowedStores ||
+                                 !Array.isArray(allowedStores) ||
+                                 allowedStores.length === 0;
+
+      if (hasBlankStore || hasNoAllowedStores) {
+        usersWithBlankStores.push({
+          id: doc.id,
+          firstName: userData.firstName || '',
+          lastName: userData.lastName || '',
+          email: userData.email || '',
+          jobTitle: userData.jobTitle || '',
+          storeNumber: storeNumber || null,
+          homeStore: userData.homeStore || null,
+          allowedStores: allowedStores || [],
+          createdAt: userData.createdAt,
+          provider: userData.provider || 'email',
+          approved: userData.approved
+        });
+      }
+    });
+
+    logger.info("Blank store users search completed", {
+      total_users: allUsersSnapshot.docs.length,
+      blank_store_users: usersWithBlankStores.length
+    });
+
+    res.json({
+      users: usersWithBlankStores,
+      total_users: allUsersSnapshot.docs.length,
+      blank_store_users: usersWithBlankStores.length
+    });
+
+  } catch (error) {
+    logger.error("Admin find blank store users error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== Admin Get User Details =====
+export const adminUserDetails = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).send("Use GET");
+
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+
+    const user_id = req.query.user_id;
+    if (!user_id) return res.status(400).send("Missing user_id");
+
+    logger.info("Admin getting user details", {
+      user_id,
+      admin: decodedToken.uid
+    });
+
+    const userDoc = await db.collection("users").doc(user_id).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).send("User not found");
+    }
+
+    const userData = userDoc.data();
+
+    res.json({
+      id: userDoc.id,
+      ...userData
+    });
+
+  } catch (error) {
+    logger.error("Admin user details error:", error);
+    res.status(500).send("Internal server error: " + error.message);
+  }
+});
+
+// ===== USER ACCOUNT DELETION =====
+export const deleteUserAccount = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  if (req.method !== 'POST') {
+    return res.status(405).send('Method not allowed');
+  }
+
+  try {
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    const userId = decodedToken.uid;
+    
+    logger.info("Account deletion request received", { userId });
+
+    // Get user data before deletion for cleanup
+    const userDoc = await db.collection("users").doc(userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userData = userDoc.data();
+    const userEmail = userData.email;
+    const storeNumber = userData.storeNumber;
+
+    // Start batch operations for atomic deletion
+    const batch = db.batch();
+
+    // 1. Delete user profile
+    const userRef = db.collection("users").doc(userId);
+    batch.delete(userRef);
+
+    // 2. Delete user's QR scan history (anonymize scans they were involved in)
+    const scansQuery = await db.collection("scans")
+      .where("claimedBy", "==", userId)
+      .get();
+    
+    scansQuery.forEach(doc => {
+      const scanRef = db.collection("scans").doc(doc.id);
+      batch.update(scanRef, {
+        claimedBy: null,
+        claimedByName: "Deleted User",
+        claimedAt: null
+      });
+    });
+
+    // 3. Delete user's GroupMe tokens and bots
+    const tokensQuery = await db.collection("groupme_tokens")
+      .where("firebase_uid", "==", userId)
+      .get();
+    
+    tokensQuery.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    const botsQuery = await db.collection("groupme_bots")
+      .where("firebase_uid", "==", userId)
+      .get();
+
+    // Store bot deletion tasks for after batch commit
+    const botDeletionTasks = [];
+    botsQuery.forEach(doc => {
+      const botData = doc.data();
+      // Get access token from tokens query for bot deletion
+      const tokenDoc = tokensQuery.docs.find(t => t.data().user_id === botData.user_id);
+      if (tokenDoc) {
+        botDeletionTasks.push({
+          bot_id: botData.bot_id,
+          access_token: tokenDoc.data().access_token
+        });
+      }
+      batch.delete(doc.ref);
+    });
+
+    // 4. Delete user's support tickets
+    const ticketsQuery = await db.collection("tickets")
+      .where("userId", "==", userId)
+      .get();
+    
+    ticketsQuery.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    // 5. Delete pending profile changes
+    const pendingChangesQuery = await db.collection("pending_changes")
+      .where("userId", "==", userId)
+      .get();
+    
+    pendingChangesQuery.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    // Commit all Firestore deletions
+    await batch.commit();
+
+    // Delete GroupMe bots from API (after Firestore batch)
+    for (const bot of botDeletionTasks) {
+      try {
+        const deleteResp = await fetch(`https://api.groupme.com/v3/bots/destroy`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Access-Token": bot.access_token
+          },
+          body: JSON.stringify({ bot_id: bot.bot_id })
+        });
+        
+        if (deleteResp.ok) {
+          logger.info("GroupMe bot deleted during account deletion", { bot_id: bot.bot_id, userId });
+        } else {
+          logger.warn("Failed to delete GroupMe bot during account deletion", { 
+            bot_id: bot.bot_id, 
+            status: deleteResp.status,
+            userId 
+          });
+        }
+      } catch (botError) {
+        logger.error("Error deleting GroupMe bot during account deletion", { 
+          bot_id: bot.bot_id, 
+          error: botError.message,
+          userId 
+        });
+      }
+    }
+
+    // Delete Firebase Auth account (this will invalidate all tokens)
+    try {
+      await getAuth().deleteUser(userId);
+      logger.info("Firebase Auth account deleted", { userId, userEmail });
+    } catch (authError) {
+      logger.error("Failed to delete Firebase Auth account", { 
+        userId, 
+        userEmail, 
+        error: authError.message 
+      });
+      // Continue even if auth deletion fails
+    }
+
+    // Log successful account deletion
+    logger.info("Account deletion completed", { 
+      userId, 
+      userEmail, 
+      storeNumber,
+      scansAnonymized: scansQuery.size,
+      botsDeleted: botDeletionTasks.length,
+      ticketsDeleted: ticketsQuery.size
+    });
+
+    // Create deletion record for compliance
+    await db.collection("account_deletions").add({
+      deletedUserId: userId,
+      deletedUserEmail: userEmail,
+      storeNumber: storeNumber,
+      deletionDate: FieldValue.serverTimestamp(),
+      dataDeleted: {
+        userProfile: true,
+        scansAnonymized: scansQuery.size,
+        groupmeTokens: tokensQuery.size,
+        groupmeBots: botDeletionTasks.length,
+        supportTickets: ticketsQuery.size,
+        pendingChanges: pendingChangesQuery.size,
+        firebaseAuth: true
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: "Account and all associated data have been permanently deleted.",
+      deletionId: userId,
+      dataRemoved: {
+        userProfile: true,
+        scansAnonymized: scansQuery.size,
+        groupmeData: tokensQuery.size + botDeletionTasks.length,
+        supportTickets: ticketsQuery.size,
+        pendingChanges: pendingChangesQuery.size
+      }
+    });
+
+  } catch (error) {
+    logger.error("Account deletion error:", error);
+    res.status(500).json({ 
+      error: "Failed to delete account", 
+      message: error.message 
+    });
+  }
+});
+
+// ===== Debug: Get user version statistics =====
+export const getUserVersionStats = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    // Check if user is admin
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    // Get all users with version info
+    const usersSnapshot = await db.collection("users").get();
+    const versionStats = {};
+    const outdatedUsers = [];
+    const currentLatestVersion = "1.7.26"; // Update this when releasing new versions
+
+    let totalUsers = 0;
+    let usersWithVersionInfo = 0;
+
+    usersSnapshot.docs.forEach(doc => {
+      const userData = doc.data();
+      totalUsers++;
+
+      if (userData.appVersion) {
+        usersWithVersionInfo++;
+        const version = userData.appVersion;
+        
+        if (!versionStats[version]) {
+          versionStats[version] = {
+            count: 0,
+            users: []
+          };
+        }
+        
+        versionStats[version].count++;
+        versionStats[version].users.push({
+          uid: doc.id,
+          email: userData.email,
+          firstName: userData.firstName,
+          lastName: userData.lastName,
+          storeNumber: userData.storeNumber,
+          lastSeen: userData.lastSeen,
+          deviceInfo: userData.deviceInfo,
+          appVersionCode: userData.appVersionCode
+        });
+
+        // Check if user is running outdated version
+        if (version !== currentLatestVersion) {
+          outdatedUsers.push({
+            uid: doc.id,
+            email: userData.email,
+            firstName: userData.firstName,
+            lastName: userData.lastName,
+            storeNumber: userData.storeNumber,
+            currentVersion: version,
+            lastSeen: userData.lastSeen,
+            deviceInfo: userData.deviceInfo
+          });
+        }
+      }
+    });
+
+    // Sort versions by count
+    const sortedVersions = Object.entries(versionStats)
+      .sort(([,a], [,b]) => b.count - a.count)
+      .map(([version, data]) => ({ version, ...data }));
+
+    res.json({
+      totalUsers,
+      usersWithVersionInfo,
+      usersWithoutVersionInfo: totalUsers - usersWithVersionInfo,
+      currentLatestVersion,
+      versionStats: sortedVersions,
+      outdatedUsers: outdatedUsers.length,
+      outdatedUsersList: outdatedUsers.slice(0, 20) // Limit to first 20 for performance
+    });
+
+  } catch (error) {
+    logger.error("Error getting user version stats:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===== Debug: Check specific user's shift status (no auth for testing) =====
+export const debugUserShiftStatus = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Temporary: Skip authentication for debugging
+    // TODO: Re-enable authentication after debugging
+
+    const { storeNumber, userEmail } = req.query;
+    
+    if (!storeNumber) {
+      return res.status(400).json({ error: "storeNumber parameter required" });
+    }
+
+    // Get users for the store
+    let usersSnapshot = await db.collection("users")
+      .where("storeNumber", "==", parseInt(storeNumber))
+      .get();
+    
+    if (usersSnapshot.empty) {
+      usersSnapshot = await db.collection("users")
+        .where("storeNumber", "==", String(storeNumber))
+        .get();
+    }
+
+    const debugInfo = {
+      storeNumber,
+      currentTime: new Date().toISOString(),
+      usersFound: usersSnapshot.docs.length,
+      users: []
+    };
+
+    usersSnapshot.docs.forEach(doc => {
+      const userData = doc.data();
+      const userName = userData.firstName || userData.email || "Unknown";
+      
+      // Skip if filtering by email and this isn't the user
+      if (userEmail && userData.email !== userEmail) {
+        return;
+      }
+
+      const shiftStatus = isUserOnShift(userData);
+      const hasValidFCM = userData.fcmToken && userData.fcmToken.length > 10;
+
+      debugInfo.users.push({
+        uid: doc.id,
+        email: userData.email,
+        firstName: userData.firstName,
+        storeNumber: userData.storeNumber,
+        notificationsEnabled: userData.notificationsEnabled,
+        hasValidFCMToken: hasValidFCM,
+        fcmTokenLength: userData.fcmToken ? userData.fcmToken.length : 0,
+        workSchedule: userData.workSchedule,
+        isOnShift: shiftStatus,
+        wouldReceiveNotification: hasValidFCM && shiftStatus,
+        lastSeen: userData.lastSeen,
+        appVersion: userData.appVersion
+      });
+    });
+
+    res.json(debugInfo);
+
+  } catch (error) {
+    logger.error("Error debugging user shift status:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===== Debug: Send update notification to outdated users =====
+export const notifyOutdatedUsers = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    // Check if user is admin
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { targetVersion, message, forceUpdate } = req.body;
+    const currentLatestVersion = "1.7.26";
+
+    // Get users running outdated versions
+    const usersSnapshot = await db.collection("users")
+      .where("appVersion", "!=", currentLatestVersion)
+      .get();
+
+    if (usersSnapshot.empty) {
+      return res.json({ 
+        message: "No outdated users found",
+        notificationsSent: 0 
+      });
+    }
+
+    let notificationsSent = 0;
+    const failedNotifications = [];
+
+    // Send notification to each outdated user
+    for (const userDoc of usersSnapshot.docs) {
+      const userData = userDoc.data();
+      
+      if (userData.fcmToken && userData.fcmToken.length > 10) {
+        try {
+          const notificationMessage = {
+            data: {
+              type: "app_update",
+              title: "App Update Available",
+              body: message || `Please update to the latest version (${currentLatestVersion})`,
+              currentVersion: userData.appVersion || "unknown",
+              latestVersion: currentLatestVersion,
+              forceUpdate: forceUpdate ? "true" : "false"
+            },
+            android: {
+              priority: "high"
+            },
+            token: userData.fcmToken
+          };
+
+          await getMessaging().send(notificationMessage);
+          notificationsSent++;
+          
+          logger.info(`Update notification sent to user ${userData.email} (v${userData.appVersion})`);
+          
+        } catch (error) {
+          logger.error(`Failed to send update notification to ${userData.email}:`, error);
+          failedNotifications.push({
+            email: userData.email,
+            error: error.message
+          });
+        }
+      }
+    }
+
+    res.json({
+      message: `Update notifications sent successfully`,
+      notificationsSent,
+      totalOutdatedUsers: usersSnapshot.docs.length,
+      failedNotifications
+    });
+
+  } catch (error) {
+    logger.error("Error sending update notifications:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===== Get user response statistics =====
+export const getUserResponseStatsAPI = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).json({ error: "Too many requests. Please try again later." });
+    }
+    
+    // Authenticate user and verify admin using same pattern as other admin functions
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+    
+    logger.info("Analytics request from admin user:", decodedToken.uid);
+
+    // Parse request data
+    const { userId, storeNumber, days = 30 } = req.method === 'POST' ? req.body : req.query;
+    logger.info("Request params:", { userId, storeNumber, days, method: req.method });
+    
+    if (!userId && !storeNumber) {
+      logger.warn("Missing required parameters");
+      return res.status(400).json({ error: 'Either userId or storeNumber is required' });
+    }
+
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+    logger.info("Date range:", { startDate: startDate.toISOString(), endDate: endDate.toISOString() });
+
+    // Query scans collection for responses
+    logger.info("Building query for scans collection...");
+    
+    // Start with store filter first, then add timestamp filter
+    let query;
+    if (storeNumber) {
+      logger.info("Starting with store filter:", storeNumber);
+      query = db.collection('scans')
+        .where('storeNumber', '==', storeNumber.toString())
+        .where('timestamp', '>=', Timestamp.fromDate(startDate))
+        .where('timestamp', '<=', Timestamp.fromDate(endDate));
+    } else {
+      // If no store filter, just use timestamp range
+      query = db.collection('scans')
+        .where('timestamp', '>=', Timestamp.fromDate(startDate))
+        .where('timestamp', '<=', Timestamp.fromDate(endDate));
+    }
+
+    logger.info("Executing query...");
+    const scansSnapshot = await query.get();
+    logger.info("Query completed, found documents:", scansSnapshot.size);
+    
+    // Process response statistics
+    logger.info("Starting data processing...");
+    const userStats = {};
+    let totalAssists = 0;
+    let totalIgnores = 0;
+    let totalClaims = 0;
+    let totalTimeouts = 0;
+
+    scansSnapshot.docs.forEach((doc, index) => {
+      try {
+        const scanData = doc.data();
+        if (index < 3) {
+          logger.info(`Sample scan ${index}:`, {
+            id: doc.id,
+            storeNumber: scanData.storeNumber,
+            claimedBy: scanData.claimedBy,
+            responsesCount: scanData.responses ? scanData.responses.length : 0
+          });
+        }
+
+        // Count claim-based assists (in-app assists)
+      if (scanData.claimedBy && (!userId || scanData.claimedBy === userId)) {
+        const userKey = scanData.claimedBy;
+        if (!userStats[userKey]) {
+          userStats[userKey] = {
+            userId: userKey,
+            userName: scanData.claimedByName || 'Unknown',
+            assists: 0,
+            ignores: 0,
+            claims: 0,
+            timeouts: 0,
+            responseTimes: [], // Track individual response times for speed bonus
+            lastActivity: null
+          };
+        }
+        userStats[userKey].claims++;
+        totalClaims++;
+
+        // Calculate response time for speed bonus
+        if (scanData.claimedAt && scanData.timestamp) {
+          const responseTimeMs = scanData.claimedAt.toMillis() - scanData.timestamp.toMillis();
+          userStats[userKey].responseTimes.push(responseTimeMs);
+        }
+
+        if (scanData.claimedAt && (!userStats[userKey].lastActivity || scanData.claimedAt.toDate() > userStats[userKey].lastActivity)) {
+          userStats[userKey].lastActivity = scanData.claimedAt.toDate();
+        }
+      }
+
+      // Count response array entries (notification button assists/ignores/timeouts)
+      if (scanData.responses && Array.isArray(scanData.responses)) {
+        scanData.responses.forEach(response => {
+          if (!userId || response.userId === userId) {
+            const userKey = response.userId;
+            if (!userStats[userKey]) {
+              userStats[userKey] = {
+                userId: userKey,
+                userName: response.userName || (response.firstName && response.lastName ? `${response.firstName} ${response.lastName}` : 'Unknown'),
+                assists: 0,
+                ignores: 0,
+                claims: 0,
+                timeouts: 0,
+                responseTimes: [],
+                lastActivity: null
+              };
+            }
+
+            if (response.action === 'assist') {
+              userStats[userKey].assists++;
+              totalAssists++;
+
+              // Track response time for assists from notification buttons
+              if (response.responseTime) {
+                userStats[userKey].responseTimes.push(response.responseTime);
+              } else if (response.timestamp && scanData.timestamp) {
+                const responseTimeMs = response.timestamp.toMillis() - scanData.timestamp.toMillis();
+                userStats[userKey].responseTimes.push(responseTimeMs);
+              }
+            } else if (response.action === 'ignore') {
+              // Separate manual ignores from timeouts
+              if (response.source === 'timeout') {
+                userStats[userKey].timeouts++;
+                totalTimeouts++;
+              } else {
+                userStats[userKey].ignores++;
+                totalIgnores++;
+              }
+            }
+
+            if (response.timestamp && (!userStats[userKey].lastActivity || response.timestamp.toDate() > userStats[userKey].lastActivity)) {
+              userStats[userKey].lastActivity = response.timestamp.toDate();
+            }
+          }
+        });
+      }
+      } catch (docError) {
+        logger.error(`Error processing document ${doc.id}:`, docError);
+      }
+    });
+
+    logger.info("Data processing completed", {
+      totalScans: scansSnapshot.size,
+      uniqueUsers: Object.keys(userStats).length,
+      totalAssists,
+      totalIgnores,
+      totalClaims,
+      totalTimeouts
+    });
+
+    // Calculate weighted score based on formula:
+    // Score = (Assists × 100) + Speed Bonus - (Manual Ignores × 5) - (Timeouts × 50)
+    const calculateWeightedScore = (user) => {
+      let score = 0;
+
+      // Base assist points (includes both claims and notification assists)
+      const totalAssistsForUser = user.assists + user.claims;
+      score += totalAssistsForUser * 100;
+
+      // Speed bonus calculation
+      user.responseTimes.forEach(responseTimeMs => {
+        const responseTimeSeconds = responseTimeMs / 1000;
+        if (responseTimeSeconds < 30) {
+          score += 25; // <30s: +25 pts
+        } else if (responseTimeSeconds < 60) {
+          score += 15; // 30-60s: +15 pts
+        } else if (responseTimeSeconds < 120) {
+          score += 10; // 1-2min: +10 pts
+        } else if (responseTimeSeconds < 180) {
+          score += 5;  // 2-3min: +5 pts
+        } else if (responseTimeSeconds < 300) {
+          score += 0;  // 3-5min: 0 pts
+        } else {
+          score -= 10; // >5min: -10 pts
+        }
+      });
+
+      // Penalties
+      score -= user.ignores * 5;    // Manual ignore: -5 pts
+      score -= user.timeouts * 50;  // Timeout: -50 pts
+
+      return Math.round(score);
+    };
+
+    // Convert to array and calculate weighted scores
+    const userArray = Object.values(userStats).map(user => {
+      const weightedScore = calculateWeightedScore(user);
+      return {
+        ...user,
+        totalResponses: user.assists + user.ignores + user.claims + user.timeouts,
+        responseRate: user.assists + user.claims > 0 ?
+          ((user.assists + user.claims) / (user.assists + user.ignores + user.claims + user.timeouts) * 100).toFixed(1) : '0.0',
+        weightedScore,
+        // Don't send responseTimes array to client (just used for calculation)
+        responseTimes: undefined
+      };
+    }).sort((a, b) => b.weightedScore - a.weightedScore); // Sort by weighted score
+
+    const result = {
+      users: userArray,
+      summary: {
+        totalAssists,
+        totalIgnores,
+        totalClaims,
+        totalTimeouts,
+        totalResponses: totalAssists + totalIgnores + totalClaims + totalTimeouts,
+        totalScans: scansSnapshot.docs.length,
+        responseRate: scansSnapshot.docs.length > 0 ?
+          ((totalAssists + totalClaims) / scansSnapshot.docs.length * 100).toFixed(1) : '0.0',
+        dateRange: {
+          start: startDate.toISOString(),
+          end: endDate.toISOString(),
+          days: parseInt(days)
+        }
+      }
+    };
+
+    res.json(result);
+
+  } catch (error) {
+    logger.error("Error getting user response stats:", {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    
+    // Return more specific error information
+    res.status(500).json({ 
+      error: 'Failed to get response statistics',
+      details: error.message,
+      code: error.code
+    });
+  }
+});
+
+// ===== Scheduled Function: Process Notification Timeouts =====
+export const processNotificationTimeouts = onSchedule({
+  schedule: "* * * * *", // Every minute (cron format: min hour day month dayofweek)
+  timeZone: "America/Chicago",
+  region: REGION,
+  retryConfig: {
+    retryCount: 3,
+    maxRetryDuration: "60s"
+  }
+}, async (event) => {
+  try {
+    logger.info("Starting notification timeout processing...");
+    
+    // Get scans that need timeout processing (created more than 60 seconds ago)
+    const cutoffTime = new Date(Date.now() - 60 * 1000); // 60 seconds ago
+    const scansQuery = await db.collection("scans")
+      .where("timeoutProcessed", "==", false)
+      .where("status", "==", "pending")
+      .where("timestamp", "<", Timestamp.fromDate(cutoffTime))
+      .limit(50) // Process in batches
+      .get();
+    
+    if (scansQuery.empty) {
+      logger.info("No scans requiring timeout processing found");
+      return;
+    }
+    
+    logger.info(`Processing timeouts for ${scansQuery.size} scans`);
+    
+    for (const scanDoc of scansQuery.docs) {
+      const scanData = scanDoc.data();
+      const scanId = scanDoc.id;
+      
+      try {
+        await processIndividualScanTimeout(scanId, scanData);
+      } catch (error) {
+        logger.error(`Error processing timeout for scan ${scanId}:`, error);
+      }
+    }
+    
+    logger.info("Notification timeout processing completed");
+  } catch (error) {
+    logger.error("Error in processNotificationTimeouts:", error);
+  }
+});
+
+// ===== Helper: Process Individual Scan Timeout =====
+async function processIndividualScanTimeout(scanId, scanData) {
+  logger.info(`Processing timeout for scan ${scanId}`);
+  
+  // Check if already claimed or resolved
+  if (scanData.status !== "pending" || scanData.claimedBy) {
+    logger.info(`Scan ${scanId} already resolved, marking timeout as processed`);
+    await db.collection("scans").doc(scanId).update({
+      timeoutProcessed: true
+    });
+    return;
+  }
+  
+  const eligibleUsers = scanData.eligibleUsers || [];
+  const responses = scanData.responses || [];
+  
+  // Create a map of user responses for quick lookup
+  const userResponses = new Map();
+  responses.forEach(response => {
+    userResponses.set(response.userId, response.action);
+  });
+  
+  // Track timeout ignores and update eligible users
+  const updatedEligibleUsers = [];
+  const timeoutIgnores = [];
+  let allUsersIgnored = true;
+  
+  for (const user of eligibleUsers) {
+    const userResponse = userResponses.get(user.uid);
+    
+    if (userResponse) {
+      // User already responded explicitly
+      updatedEligibleUsers.push({
+        ...user,
+        responded: true,
+        responseType: userResponse
+      });
+      if (userResponse === 'assist') {
+        allUsersIgnored = false;
+      }
+    } else {
+      // User didn't respond - mark as timeout ignore
+      updatedEligibleUsers.push({
+        ...user,
+        responded: true,
+        responseType: 'timeout'
+      });
+      
+      // Add timeout ignore to responses array
+      timeoutIgnores.push({
+        userId: user.uid,
+        userName: user.name,
+        action: 'ignore',
+        timestamp: FieldValue.serverTimestamp(),
+        source: 'timeout',
+        responseTime: 60000 // 60 seconds
+      });
+    }
+  }
+  
+  // Update scan document with timeout processing
+  const updateData = {
+    timeoutProcessed: true,
+    eligibleUsers: updatedEligibleUsers
+  };
+  
+  // Add timeout ignores to responses array
+  if (timeoutIgnores.length > 0) {
+    updateData.responses = FieldValue.arrayUnion(...timeoutIgnores);
+    logger.info(`Adding ${timeoutIgnores.length} timeout ignores for scan ${scanId}`);
+  }
+  
+  await db.collection("scans").doc(scanId).update(updateData);
+  
+  // Check if all users ignored and send secondary alert
+  if (allUsersIgnored && !scanData.secondaryAlertSent) {
+    await sendSecondaryAlert(scanId, scanData);
+  }
+  
+  logger.info(`Timeout processing completed for scan ${scanId}`, {
+    eligibleUsers: eligibleUsers.length,
+    timeoutIgnores: timeoutIgnores.length,
+    allUsersIgnored
+  });
+}
+
+// ===== Helper: Send Secondary Alert =====
+async function sendSecondaryAlert(scanId, scanData) {
+  try {
+    logger.info(`All users ignored scan ${scanId}, sending secondary alert`);
+    
+    // Mark secondary alert as sent to prevent duplicates
+    await db.collection("scans").doc(scanId).update({
+      secondaryAlertSent: true,
+      secondaryAlertSentAt: FieldValue.serverTimestamp()
+    });
+    
+    // Send escalated notification only to managers or designated escalation contacts
+    // LEGAL COMPLIANCE: Do not notify off-shift employees to avoid unpaid work issues
+    const store = scanData.storeNumber;
+    const area = scanData.areaDescription || "Unknown Area";
+    
+    // Get users with manager role or escalation permissions for the store
+    let managersSnapshot = await db.collection("users")
+      .where("storeNumber", "==", parseInt(store))
+      .where("role", "==", "manager")
+      .get();
+    
+    if (managersSnapshot.empty) {
+      managersSnapshot = await db.collection("users")
+        .where("storeNumber", "==", String(store))
+        .where("role", "==", "manager")
+        .get();
+    }
+    
+    // If no managers found, try escalation contacts (admin email for now)
+    if (managersSnapshot.empty) {
+      logger.info(`No managers found for store ${store}, secondary alert logged only`);
+      
+      // Log escalation for admin review instead of sending notifications
+      await db.collection("escalation_logs").add({
+        scanId: scanId,
+        storeNumber: store,
+        areaDescription: area,
+        timestamp: FieldValue.serverTimestamp(),
+        reason: "All on-shift users ignored - no managers available",
+        requiresAdminAttention: true
+      });
+      
+      logger.warn(`ESCALATION REQUIRED: Store ${store} - No response to customer request in ${area}. No managers available for notification.`);
+      return;
+    }
+    
+    const escalatedNotificationData = {
+      scanId: scanId,
+      storeNumber: store,
+      areaDescription: area,
+      timestamp: Date.now().toString(),
+      title: "🔴 MANAGER ALERT: Customer Assistance Required",
+      body: `Store ${store}: All on-shift staff ignored customer request in ${area}. Manager intervention needed.`,
+      isEscalated: "true",
+      managerAlert: "true"
+    };
+    
+    let escalationCount = 0;
+    
+    // Only send to managers who are currently on shift to avoid legal issues
+    for (const managerDoc of managersSnapshot.docs) {
+      const managerData = managerDoc.data();
+      
+      // Check if manager is currently on shift
+      const managerOnShift = isUserOnShift(managerData);
+      
+      if (managerData.fcmToken && managerData.fcmToken.length > 10 && managerOnShift) {
+        try {
+          const message = {
+            data: escalatedNotificationData,
+            android: {
+              priority: "high",
+              ttl: 3600,
+              notification: {
+                channelId: "customer_assistance",
+                sound: "default",
+                priority: "high", // Use high instead of max to avoid Google policy issues
+                visibility: "public",
+                defaultSound: true,
+                defaultVibrateTimings: true,
+                notificationCount: 1
+              }
+            },
+            token: managerData.fcmToken
+          };
+          
+          await getMessaging().send(message);
+          escalationCount++;
+          logger.info(`Escalation sent to on-shift manager: ${managerData.firstName || 'unknown'}`);
+        } catch (error) {
+          logger.error(`Failed to send escalated notification to manager ${managerData.firstName || 'unknown'}:`, error);
+        }
+      } else if (!managerOnShift) {
+        logger.info(`Manager ${managerData.firstName || 'unknown'} is off-shift, skipping escalation notification`);
+      }
+    }
+    
+    // If no on-shift managers available, log for admin review
+    if (escalationCount === 0) {
+      await db.collection("escalation_logs").add({
+        scanId: scanId,
+        storeNumber: store,
+        areaDescription: area,
+        timestamp: FieldValue.serverTimestamp(),
+        reason: "All on-shift users ignored - managers exist but are off-shift",
+        requiresAdminAttention: true,
+        managersFound: managersSnapshot.size
+      });
+      
+      logger.warn(`ESCALATION LOGGED: Store ${store} - No on-shift managers available for escalation. Admin review required.`);
+    }
+    
+    logger.info(`Secondary alert sent for scan ${scanId}`, {
+      store,
+      area,
+      escalationsSent: escalationCount,
+      totalUsers: usersSnapshot.size
+    });
+    
+  } catch (error) {
+    logger.error(`Error sending secondary alert for scan ${scanId}:`, error);
+  }
+}
+
+// ===== Handle Notification Response (Assist/Ignore) =====
+export const notificationResponse = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    // Authenticate user
+    const user = await authenticateUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const { scanId, action } = req.body;
+    
+    if (!scanId || !action || !['assist', 'ignore'].includes(action)) {
+      return res.status(400).json({ error: "Invalid scanId or action" });
+    }
+
+    // Get user details
+    const userDoc = await db.collection("users").doc(user.uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const userData = userDoc.data();
+    const userName = userData.firstName || userData.fullName || 'Unknown';
+
+    // Get scan document
+    const scanDoc = await db.collection("scans").doc(scanId).get();
+    if (!scanDoc.exists) {
+      return res.status(404).json({ error: "Scan not found" });
+    }
+
+    const scanData = scanDoc.data();
+    
+    // Check if scan is still pending
+    if (scanData.status !== "pending") {
+      return res.status(400).json({ error: "Scan is no longer pending" });
+    }
+
+    // Check if user already responded
+    const existingResponse = scanData.responses?.find(r => r.userId === user.uid);
+    if (existingResponse) {
+      return res.status(400).json({ error: "User already responded to this scan" });
+    }
+
+    // Create response record
+    const responseRecord = {
+      userId: user.uid,
+      userName: userName,
+      action: action,
+      timestamp: FieldValue.serverTimestamp(),
+      source: 'notification',
+      responseTime: Date.now() - (scanData.timestampMs || Date.now())
+    };
+
+    // Update scan document with response
+    const updateData = {
+      responses: FieldValue.arrayUnion(responseRecord)
+    };
+
+    // If assist, claim the scan
+    if (action === 'assist') {
+      updateData.claimedBy = user.uid;
+      updateData.claimedByName = userName;
+      updateData.claimedAt = FieldValue.serverTimestamp();
+      updateData.status = "claimed";
+    }
+
+    // Update eligible users array to mark user as responded
+    const eligibleUsers = scanData.eligibleUsers || [];
+    const updatedEligibleUsers = eligibleUsers.map(eligibleUser => 
+      eligibleUser.uid === user.uid ? { ...eligibleUser, responded: true, responseType: action } : eligibleUser
+    );
+    if (updatedEligibleUsers.length > 0) {
+      updateData.eligibleUsers = updatedEligibleUsers;
+    }
+
+    await db.collection("scans").doc(scanId).update(updateData);
+
+    logger.info(`Notification response recorded`, {
+      scanId,
+      userId: user.uid,
+      userName,
+      action,
+      responseTime: responseRecord.responseTime
+    });
+
+    res.json({ 
+      success: true, 
+      action,
+      scanId,
+      userName,
+      claimed: action === 'assist'
+    });
+
+  } catch (error) {
+    logger.error("Error handling notification response:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== Get Active Associates Count =====
+export const getActiveAssociatesCount = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    // Authenticate user
+    const user = await authenticateUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const { storeNumber } = req.body;
+    
+    if (!storeNumber) {
+      return res.status(400).json({ error: "Store number is required" });
+    }
+
+    // Get all users for the store
+    let usersSnapshot = await db.collection("users")
+      .where("storeNumber", "==", parseInt(storeNumber))
+      .get();
+    
+    if (usersSnapshot.empty) {
+      usersSnapshot = await db.collection("users")
+        .where("storeNumber", "==", String(storeNumber))
+        .get();
+    }
+
+    if (usersSnapshot.empty) {
+      return res.json({ activeCount: 0, totalUsers: 0 });
+    }
+
+    // Calculate 96 hours ago
+    const cutoffTime = new Date(Date.now() - (96 * 60 * 60 * 1000));
+    
+    let activeCount = 0;
+    const totalUsers = usersSnapshot.size;
+
+    for (const userDoc of usersSnapshot.docs) {
+      const userData = userDoc.data();
+      
+      // Check if user has recent activity (last login, FCM token update, etc.)
+      let hasRecentActivity = false;
+      
+      // Check various activity timestamps
+      const activityTimestamps = [
+        userData.lastLoginAt,
+        userData.fcmTokenUpdatedAt,
+        userData.updatedAt,
+        userData.lastActiveAt
+      ].filter(Boolean);
+
+      for (const timestamp of activityTimestamps) {
+        const activityTime = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+        if (activityTime > cutoffTime) {
+          hasRecentActivity = true;
+          break;
+        }
+      }
+
+      // Check if user is currently on shift
+      const isOnShift = isUserOnShift(userData);
+
+      // Count if both conditions are met
+      if (hasRecentActivity && isOnShift) {
+        activeCount++;
+      }
+    }
+
+    logger.info(`Active associates count for store ${storeNumber}`, {
+      activeCount,
+      totalUsers,
+      cutoffTime: cutoffTime.toISOString()
+    });
+
+    res.json({ 
+      activeCount, 
+      totalUsers,
+      storeNumber: String(storeNumber)
+    });
+
+  } catch (error) {
+    logger.error("Error getting active associates count:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+// ===== Get Active Associates Details =====
+export const getActiveAssociates = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+    
+    // Authenticate user
+    const user = await authenticateUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    
+    const { storeNumber } = req.body;
+    
+    // Query for users with BOTH string and integer store numbers (since data is inconsistent)
+    let allUserDocs = [];
+
+    if (storeNumber) {
+      // Query for string store number
+      const usersQueryString = db.collection("users")
+        .where("notificationsEnabled", "==", true)
+        .where("storeNumber", "==", String(storeNumber));
+
+      // Query for integer store number
+      const usersQueryInt = db.collection("users")
+        .where("notificationsEnabled", "==", true)
+        .where("storeNumber", "==", parseInt(storeNumber));
+
+      const [stringSnapshot, intSnapshot] = await Promise.all([
+        usersQueryString.get(),
+        usersQueryInt.get()
+      ]);
+
+      // Merge results, avoiding duplicates
+      const seenIds = new Set();
+      stringSnapshot.docs.forEach(doc => {
+        allUserDocs.push(doc);
+        seenIds.add(doc.id);
+      });
+      intSnapshot.docs.forEach(doc => {
+        if (!seenIds.has(doc.id)) {
+          allUserDocs.push(doc);
+        }
+      });
+    } else {
+      // No store filter - get all users with notifications enabled
+      const usersQuery = db.collection("users")
+        .where("notificationsEnabled", "==", true);
+      const usersSnapshot = await usersQuery.get();
+      allUserDocs = usersSnapshot.docs;
+    }
+
+    if (allUserDocs.length === 0) {
+      return res.json({
+        activeAssociates: [],
+        storeNumber: storeNumber ? String(storeNumber) : 'all',
+        retrievedAt: new Date().toISOString()
+      });
+    }
+    
+    // Calculate cutoff times
+    const now = new Date();
+    const cutoffTime = new Date(now.getTime() - (96 * 60 * 60 * 1000)); // 96 hours ago (for display only)
+
+    const activeAssociates = [];
+
+    // Process users in batches for better performance
+    const users = allUserDocs;
+
+    for (const userDoc of users) {
+      const userData = userDoc.data();
+
+      // Check if user is currently on shift (no activity requirement - show anyone on shift)
+      const shiftInfo = getUserShiftInfo(userData, now);
+
+      if (!shiftInfo.isOnShift) continue; // Skip if not on shift
+
+      // Track activity for display purposes (but don't filter by it)
+      const activityTimestamps = [
+        userData.lastLoginAt,
+        userData.fcmTokenUpdatedAt,
+        userData.updatedAt,
+        userData.lastActiveAt
+      ].filter(Boolean);
+
+      let mostRecentActivity = null;
+      let hasRecentActivity = false;
+
+      for (const timestamp of activityTimestamps) {
+        const activityTime = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+        if (!mostRecentActivity || activityTime > mostRecentActivity) {
+          mostRecentActivity = activityTime;
+        }
+        if (activityTime > cutoffTime) {
+          hasRecentActivity = true;
+        }
+      }
+
+      // Calculate accurate shift end time in user's timezone
+      const shiftEndTime = calculateShiftEndTime(userData, shiftInfo, now);
+      
+      activeAssociates.push({
+        id: userDoc.id,
+        firstName: userData.firstName || 'Unknown',
+        lastName: userData.lastName || 'User',
+        storeNumber: userData.storeNumber,
+        jobTitle: userData.jobTitle || 'Associate',
+        shiftStart: shiftInfo.startTime,  // Changed from currentShiftStart to match Android app
+        shiftEnd: shiftInfo.endTime,      // Changed from currentShiftEnd to match Android app
+        shiftEndTime: shiftEndTime,
+        timezone: shiftInfo.timezone,
+        lastActivity: mostRecentActivity || new Date(0),
+        isOnShift: true,
+        hasRecentActivity: hasRecentActivity
+      });
+    }
+    
+    // Sort by store number, then by name
+    activeAssociates.sort((a, b) => {
+      if (a.storeNumber !== b.storeNumber) {
+        return (a.storeNumber || 0) - (b.storeNumber || 0);
+      }
+      return `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
+    });
+
+    logger.info(`Active associates retrieved efficiently`, {
+      count: activeAssociates.length,
+      totalChecked: users.length,
+      storeFilter: storeNumber || 'all',
+      requestedBy: user.uid,
+      sampleData: activeAssociates.length > 0 ? {
+        firstName: activeAssociates[0].firstName,
+        shiftStart: activeAssociates[0].shiftStart,
+        shiftEnd: activeAssociates[0].shiftEnd
+      } : null
+    });
+
+    res.json({
+      activeAssociates,
+      count: activeAssociates.length,
+      storeNumber: storeNumber ? String(storeNumber) : 'all',
+      retrievedAt: now.toISOString()
+    });
+
+  } catch (error) {
+    logger.error("Error getting active associates details:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper function to format time in 12-hour format with AM/PM
+function formatTime12Hour(hour, minute) {
+  const period = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  const displayMinute = String(minute).padStart(2, '0');
+  return `${displayHour}:${displayMinute} ${period}`;
+}
+
+// Helper function to get user shift info efficiently
+function getUserShiftInfo(userData, now) {
+  const userTimezone = userData.timezone || "America/New_York";
+
+  try {
+    // Convert to user's local time
+    const userLocalTime = new Date(now.toLocaleString("en-US", { timeZone: userTimezone }));
+    const dayOfWeek = userLocalTime.getDay();
+    const dayName = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][dayOfWeek];
+
+    const workSchedule = userData.workSchedule;
+    if (!workSchedule) {
+      return { isOnShift: false, timezone: userTimezone, startTime: null, endTime: null }; // Users without schedules aren't on shift
+    }
+
+    const daySchedule = workSchedule[dayName];
+    if (!daySchedule || !daySchedule.isWorkingDay) {
+      return { isOnShift: false, timezone: userTimezone, startTime: null, endTime: null };
+    }
+
+    const hour = userLocalTime.getHours();
+    const minute = userLocalTime.getMinutes();
+    const currentMinutes = hour * 60 + minute;
+
+    const startHour = daySchedule.startHour != null ? parseInt(daySchedule.startHour) : 0;
+    const startMinute = daySchedule.startMinute != null ? parseInt(daySchedule.startMinute) : 0;
+    const endHour = daySchedule.endHour != null ? parseInt(daySchedule.endHour) : 23;
+    const endMinute = daySchedule.endMinute != null ? parseInt(daySchedule.endMinute) : 59;
+
+    const startMinutes = startHour * 60 + startMinute;
+    const endMinutes = endHour * 60 + endMinute;
+
+    const isOnShift = currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+
+    return {
+      isOnShift,
+      timezone: userTimezone,
+      startTime: formatTime12Hour(startHour, startMinute),
+      endTime: formatTime12Hour(endHour, endMinute),
+      startHour,
+      startMinute,
+      endHour,
+      endMinute
+    };
+  } catch (error) {
+    logger.error(`Error calculating shift info for user ${userData.firstName}:`, error);
+    return { isOnShift: false, timezone: userTimezone, startTime: null, endTime: null };
+  }
+}
+
+// Helper function to calculate accurate shift end time
+function calculateShiftEndTime(userData, shiftInfo, now) {
+  if (!shiftInfo.isOnShift || !shiftInfo.endHour) return null;
+  
+  try {
+    const userTimezone = shiftInfo.timezone;
+    
+    // Get current date in user's timezone to build proper shift end time
+    const nowInUserTZ = new Date(now.toLocaleString("en-US", { timeZone: userTimezone }));
+    const todayInUserTZ = new Date(nowInUserTZ.getFullYear(), nowInUserTZ.getMonth(), nowInUserTZ.getDate());
+    
+    // Create shift end time in user's timezone
+    const shiftEndInUserTZ = new Date(todayInUserTZ);
+    shiftEndInUserTZ.setHours(shiftInfo.endHour, shiftInfo.endMinute, 0, 0);
+    
+    // If shift end is before current time, it's tomorrow (overnight shift)
+    if (shiftEndInUserTZ <= nowInUserTZ) {
+      shiftEndInUserTZ.setDate(shiftEndInUserTZ.getDate() + 1);
+    }
+    
+    // Calculate timezone offset and convert to UTC properly
+    const utcTime = new Date(now.getTime());
+    const userTimeOffset = nowInUserTZ.getTime() - utcTime.getTime();
+    const shiftEndUTC = new Date(shiftEndInUserTZ.getTime() - userTimeOffset);
+    
+    logger.info(`Shift end calculation for ${userData.firstName}:`, {
+      userTimezone,
+      currentUTC: now.toISOString(),
+      currentUserTZ: nowInUserTZ.toISOString(),
+      shiftEndUserTZ: shiftEndInUserTZ.toISOString(), 
+      shiftEndUTC: shiftEndUTC.toISOString(),
+      endHour: shiftInfo.endHour,
+      endMinute: shiftInfo.endMinute
+    });
+    
+    return shiftEndUTC;
+  } catch (error) {
+    logger.error(`Error calculating shift end time for user ${userData.firstName}:`, error);
+    return null;
+  }
+}
+
+// ===== SHARED AUTHENTICATION API FOR CHECKLIST APP =====
+
+// Helper function for CORS
+function setCorsHeaders(res, origin) {
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.set('Access-Control-Allow-Origin', origin);
+  }
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.set('Access-Control-Max-Age', '3600');
+}
+
+// User login API for checklist app
+export const authLogin = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      res.status(400).json({ error: 'Email and password are required' });
+      return;
+    }
+
+    // Use Firebase Auth Admin SDK to verify credentials
+    const auth = getAuth();
+
+    // Get user by email
+    let userRecord;
+    try {
+      userRecord = await auth.getUserByEmail(email);
+    } catch (error) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
+
+    // Check if user exists in Firestore
+    const userDoc = await db.collection('users').doc(userRecord.uid).get();
+    if (!userDoc.exists) {
+      res.status(401).json({ error: 'User not found' });
+      return;
+    }
+
+    const userData = userDoc.data();
+
+    // Create custom token for the user
+    const customToken = await auth.createCustomToken(userRecord.uid);
+
+    res.status(200).json({
+      success: true,
+      user: {
+        uid: userRecord.uid,
+        email: userRecord.email,
+        name: userData.name || userRecord.displayName || '',
+        isAdmin: userData.isAdmin || false
+      },
+      token: customToken
+    });
+
+  } catch (error) {
+    logger.error('Error in authLogin:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// User registration API for checklist app
+export const authRegister = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { email, password, name } = req.body;
+
+    if (!email || !password || !name) {
+      res.status(400).json({ error: 'Email, password, and name are required' });
+      return;
+    }
+
+    const auth = getAuth();
+
+    // Create user in Firebase Auth
+    const userRecord = await auth.createUser({
+      email: email,
+      password: password,
+      displayName: name
+    });
+
+    // Save user data to Firestore
+    await db.collection('users').doc(userRecord.uid).set({
+      email: email,
+      name: name,
+      isAdmin: false,
+      createdAt: new Date(),
+      source: 'checklist-app'
+    });
+
+    // Create custom token for immediate login
+    const customToken = await auth.createCustomToken(userRecord.uid);
+
+    res.status(201).json({
+      success: true,
+      user: {
+        uid: userRecord.uid,
+        email: userRecord.email,
+        name: name,
+        isAdmin: false
+      },
+      token: customToken
+    });
+
+  } catch (error) {
+    logger.error('Error in authRegister:', error);
+
+    if (error.code === 'auth/email-already-exists') {
+      res.status(400).json({ error: 'Email already exists' });
+    } else if (error.code === 'auth/weak-password') {
+      res.status(400).json({ error: 'Password is too weak' });
+    } else {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+// Verify token API for checklist app
+export const authVerify = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      res.status(400).json({ error: 'Token is required' });
+      return;
+    }
+
+    const auth = getAuth();
+
+    // Verify the token
+    const decodedToken = await auth.verifyIdToken(token);
+
+    // Get user data from Firestore
+    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    if (!userDoc.exists) {
+      res.status(401).json({ error: 'User not found' });
+      return;
+    }
+
+    const userData = userDoc.data();
+
+    res.status(200).json({
+      success: true,
+      user: {
+        uid: decodedToken.uid,
+        email: decodedToken.email,
+        name: userData.name || decodedToken.name || '',
+        isAdmin: userData.isAdmin || false
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error in authVerify:', error);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// ===== CHECKLIST MANAGEMENT API =====
+
+// Get all checklist templates
+export const getChecklistTemplates = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const templatesSnapshot = await db.collection('checklist_templates').get();
+    const templates = [];
+
+    for (const templateDoc of templatesSnapshot.docs) {
+      const templateData = templateDoc.data();
+
+      // Get questions for this template
+      const questionsSnapshot = await db.collection('checklist_questions')
+        .where('templateId', '==', templateDoc.id)
+        .orderBy('order', 'asc')
+        .get();
+
+      const questions = questionsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      templates.push({
+        id: templateDoc.id,
+        ...templateData,
+        questions
+      });
+    }
+
+    res.status(200).json({ templates });
+
+  } catch (error) {
+    logger.error('Error getting templates:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create a new checklist template (admin only)
+export const createChecklistTemplate = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { token, template } = req.body;
+
+    if (!token) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    // Verify user is admin
+    const auth = getAuth();
+    const decodedToken = await auth.verifyIdToken(token);
+    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+
+    if (!userDoc.exists || !userDoc.data().isAdmin) {
+      res.status(403).json({ error: 'Admin access required' });
+      return;
+    }
+
+    // Create template
+    const templateData = {
+      name: template.name,
+      description: template.description,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: decodedToken.uid
+    };
+
+    const templateRef = await db.collection('checklist_templates').add(templateData);
+
+    // Create questions
+    const questionPromises = template.questions.map((question, index) => {
+      return db.collection('checklist_questions').add({
+        templateId: templateRef.id,
+        text: question.text,
+        type: question.type,
+        required: question.required,
+        allowNotes: question.allowNotes,
+        order: index,
+        createdAt: new Date()
+      });
+    });
+
+    await Promise.all(questionPromises);
+
+    res.status(201).json({
+      success: true,
+      templateId: templateRef.id
+    });
+
+  } catch (error) {
+    logger.error('Error creating template:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create a new checklist instance
+export const createChecklistInstance = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { token, templateId } = req.body;
+
+    if (!token || !templateId) {
+      res.status(400).json({ error: 'Token and templateId are required' });
+      return;
+    }
+
+    // Verify user
+    const auth = getAuth();
+    const decodedToken = await auth.verifyIdToken(token);
+
+    // Get template
+    const templateDoc = await db.collection('checklist_templates').doc(templateId).get();
+    if (!templateDoc.exists) {
+      res.status(404).json({ error: 'Template not found' });
+      return;
+    }
+
+    const templateData = templateDoc.data();
+
+    // Create instance
+    const instanceData = {
+      templateId,
+      templateName: templateData.name,
+      userId: decodedToken.uid,
+      status: 'draft',
+      responses: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const instanceRef = await db.collection('checklist_instances').add(instanceData);
+
+    res.status(201).json({
+      success: true,
+      instanceId: instanceRef.id
+    });
+
+  } catch (error) {
+    logger.error('Error creating instance:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get checklist instance with questions
+export const getChecklistInstance = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { token, instanceId } = req.body;
+
+    if (!token || !instanceId) {
+      res.status(400).json({ error: 'Token and instanceId are required' });
+      return;
+    }
+
+    // Verify user
+    const auth = getAuth();
+    const decodedToken = await auth.verifyIdToken(token);
+
+    // Get instance
+    const instanceDoc = await db.collection('checklist_instances').doc(instanceId).get();
+    if (!instanceDoc.exists) {
+      res.status(404).json({ error: 'Instance not found' });
+      return;
+    }
+
+    const instanceData = instanceDoc.data();
+
+    // Verify user owns this instance or is admin
+    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    const isAdmin = userDoc.exists && userDoc.data().isAdmin;
+
+    if (instanceData.userId !== decodedToken.uid && !isAdmin) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    // Get questions for this template
+    const questionsSnapshot = await db.collection('checklist_questions')
+      .where('templateId', '==', instanceData.templateId)
+      .orderBy('order', 'asc')
+      .get();
+
+    const questions = questionsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    res.status(200).json({
+      instance: {
+        id: instanceDoc.id,
+        ...instanceData
+      },
+      questions
+    });
+
+  } catch (error) {
+    logger.error('Error getting instance:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update checklist instance (save progress)
+export const updateChecklistInstance = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { token, instanceId, responses, status } = req.body;
+
+    if (!token || !instanceId) {
+      res.status(400).json({ error: 'Token and instanceId are required' });
+      return;
+    }
+
+    // Verify user
+    const auth = getAuth();
+    const decodedToken = await auth.verifyIdToken(token);
+
+    // Get instance
+    const instanceDoc = await db.collection('checklist_instances').doc(instanceId).get();
+    if (!instanceDoc.exists) {
+      res.status(404).json({ error: 'Instance not found' });
+      return;
+    }
+
+    const instanceData = instanceDoc.data();
+
+    // Verify user owns this instance
+    if (instanceData.userId !== decodedToken.uid) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    // Update instance
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    if (responses) {
+      updateData.responses = responses;
+    }
+
+    if (status) {
+      updateData.status = status;
+      if (status === 'completed') {
+        updateData.completedAt = new Date();
+      }
+    }
+
+    await db.collection('checklist_instances').doc(instanceId).update(updateData);
+
+    res.status(200).json({ success: true });
+
+  } catch (error) {
+    logger.error('Error updating instance:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Upload image for checklist response
+export const uploadChecklistImage = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { token, instanceId, questionId, imageData } = req.body;
+
+    if (!token || !instanceId || !questionId || !imageData) {
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+
+    // Verify user
+    const auth = getAuth();
+    const decodedToken = await auth.verifyIdToken(token);
+
+    // Verify instance ownership
+    const instanceDoc = await db.collection('checklist_instances').doc(instanceId).get();
+    if (!instanceDoc.exists || instanceDoc.data().userId !== decodedToken.uid) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    // For now, return a placeholder URL - in production this would upload to Firebase Storage
+    const imageUrl = `https://placeholder.com/400x300?text=Image+${questionId}`;
+
+    res.status(200).json({
+      success: true,
+      imageUrl
+    });
+
+  } catch (error) {
+    logger.error('Error uploading image:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ===== NEW TAB-BASED CHECKLIST SYSTEM =====
+
+// Submit tab-based turnover checklist
+export const submitTurnoverChecklist = onRequest({
+  region: REGION,
+  memory: "1GiB"
+}, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    logger.info('Received checklist submission request');
+    const { userInfo, checklistData, date } = req.body;
+
+    logger.info('Request data:', {
+      hasUserInfo: !!userInfo,
+      hasChecklistData: !!checklistData,
+      date: date
+    });
+
+    if (!userInfo || !userInfo.name || !userInfo.storeNumber || !checklistData) {
+      logger.error('Missing required data in request');
+      res.status(400).json({ error: 'Missing required data' });
+      return;
+    }
+
+    // Generate checklist ID
+    const checklistId = `${userInfo.storeNumber}_${date}_${userInfo.name}_${Date.now()}`;
+    logger.info('Generated checklist ID:', checklistId);
+
+    // Store in Firestore
+    const checklistDoc = {
+      id: checklistId,
+      userInfo,
+      checklistData,
+      date,
+      submittedAt: new Date(),
+      status: 'submitted'
+    };
+
+    logger.info('Saving checklist to Firestore...');
+    await db.collection('turnover_checklists').doc(checklistId).set(checklistDoc);
+    logger.info('Checklist saved to Firestore successfully');
+
+    // Generate and send PDF report
+    let pdfResult = null;
+    try {
+      pdfResult = await generateAndEmailPDF(checklistDoc);
+    } catch (pdfError) {
+      logger.error('PDF generation failed:', pdfError);
+      // Continue even if PDF fails - data is saved
+    }
+
+    res.status(200).json({
+      success: true,
+      checklistId,
+      message: 'Checklist submitted successfully',
+      pdfUrl: pdfResult?.pdfUrl || null,
+      fileName: pdfResult?.fileName || null
+    });
+
+  } catch (error) {
+    logger.error('Error submitting checklist:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      code: error.code,
+      requestBody: req.body ? 'present' : 'missing'
+    });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Helper function to generate and email PDF
+async function generateAndEmailPDF(checklistDoc) {
+  try {
+    const { userInfo, checklistData, date } = checklistDoc;
+
+    // Create professional HTML content for PDF
+    let htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            @page {
+                margin: 0.75in;
+                size: letter;
+            }
+
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                font-size: 11pt;
+                line-height: 1.4;
+                color: #333;
+                margin: 0;
+            }
+
+            .header {
+                background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+                color: white;
+                padding: 20px;
+                border-radius: 8px;
+                margin-bottom: 30px;
+                text-align: center;
+            }
+
+            .header h1 {
+                margin: 0 0 15px 0;
+                font-size: 24pt;
+                font-weight: 600;
+            }
+
+            .header-info {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 15px;
+                margin-top: 15px;
+                text-align: left;
+            }
+
+            .header-info div {
+                background: rgba(255,255,255,0.1);
+                padding: 10px;
+                border-radius: 5px;
+            }
+
+            h2 {
+                color: #1f2937;
+                font-size: 16pt;
+                margin: 25px 0 15px 0;
+                border-bottom: 2px solid #e5e7eb;
+                padding-bottom: 8px;
+            }
+
+            .section {
+                margin-bottom: 25px;
+                break-inside: avoid;
+            }
+
+            .associate {
+                background-color: #f8fafc;
+                border-left: 4px solid #3b82f6;
+                padding: 15px;
+                margin-bottom: 12px;
+                border-radius: 0 5px 5px 0;
+            }
+
+            .associate-name {
+                font-weight: 600;
+                color: #1f2937;
+                font-size: 12pt;
+            }
+
+            .associate-shift {
+                color: #2563eb;
+                font-weight: 500;
+                margin-left: 10px;
+            }
+
+            .associate-notes {
+                margin-top: 8px;
+                font-style: italic;
+                color: #6b7280;
+            }
+
+            .department-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
+                margin: 15px 0;
+            }
+
+            .metric-item, .photo-item {
+                background: #f9fafb;
+                padding: 10px;
+                border-radius: 5px;
+                border-left: 3px solid #10b981;
+            }
+
+            .metric-label {
+                font-weight: 600;
+                color: #374151;
+                font-size: 10pt;
+            }
+
+            .metric-value {
+                font-size: 14pt;
+                color: #1f2937;
+                font-weight: 600;
+            }
+
+            .photo-summary {
+                color: #6b7280;
+                font-size: 10pt;
+                margin: 8px 0;
+            }
+
+            .notes-section {
+                background: #fef3c7;
+                border-left: 4px solid #f59e0b;
+                padding: 15px;
+                border-radius: 0 5px 5px 0;
+                margin: 10px 0;
+            }
+
+            .footer {
+                margin-top: 40px;
+                text-align: center;
+                color: #9ca3af;
+                font-size: 9pt;
+                border-top: 1px solid #e5e7eb;
+                padding-top: 15px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>TURNOVER CHECKLIST REPORT</h1>
+            <div class="header-info">
+                <div>
+                    <strong>Date:</strong><br>
+                    ${new Date(date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                </div>
+                <div>
+                    <strong>Manager:</strong> ${userInfo.name}<br>
+                    <strong>Store:</strong> #${userInfo.storeNumber}
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Create text version for logging
+    let pdfContent = `TURNOVER CHECKLIST REPORT\n\n`;
+    pdfContent += `Date: ${new Date(date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n`;
+    pdfContent += `Manager: ${userInfo.name}\n`;
+    pdfContent += `Store: #${userInfo.storeNumber}\n`;
+    pdfContent += `Submitted: ${new Date(checklistDoc.submittedAt).toLocaleString()}\n\n`;
+
+    // Associates Section
+    htmlContent += `<div class="section"><h2>📋 ASSOCIATES</h2>`;
+    pdfContent += `ASSOCIATES:\n`;
+    if (checklistData.associates && checklistData.associates.length > 0) {
+      checklistData.associates.forEach(associate => {
+        htmlContent += `<div class="associate">
+          <div>
+            <span class="associate-name">${associate.name}</span>
+            <span class="associate-shift">${associate.shift}</span>
+          </div>`;
+        if (associate.accomplishments) {
+          htmlContent += `<div class="associate-notes">Accomplishments: ${associate.accomplishments}</div>`;
+        }
+        htmlContent += `</div>`;
+
+        pdfContent += `Associate "${associate.name}" was scheduled ${associate.shift}`;
+        if (associate.accomplishments) {
+          pdfContent += ` and accomplished the following: ${associate.accomplishments}`;
+        }
+        pdfContent += `\n\n`;
+      });
+    } else {
+      htmlContent += `<p style="color: #6b7280; font-style: italic;">No associates recorded for this shift.</p>`;
+      pdfContent += `No associates recorded.\n\n`;
+    }
+    htmlContent += `</div>`;
+
+    // Fresh Department Section
+    htmlContent += `<div class="section"><h2>FRESH DEPARTMENT</h2>
+      <p>The fresh department was left in the following condition:</p>`;
+    pdfContent += `FRESH DEPARTMENT:\n`;
+    pdfContent += `The fresh department was left in the following condition:\n`;
+
+    if (checklistData.fresh?.photos) {
+      Object.entries(checklistData.fresh.photos).forEach(([category, photos]) => {
+        if (photos.length > 0) {
+          htmlContent += `<p class="photo-summary">${category}: ${photos.length} photos attached</p>`;
+          pdfContent += `${category}: ${photos.length} photos attached\n`;
+        }
+      });
+    }
+    if (checklistData.fresh?.notes) {
+      htmlContent += `<p><strong>Notes:</strong> ${checklistData.fresh.notes}</p>`;
+      pdfContent += `Notes: ${checklistData.fresh.notes}\n`;
+    }
+    htmlContent += `</div>`;
+    pdfContent += `\n`;
+
+    // Digital Department Section
+    pdfContent += `DIGITAL DEPARTMENT:\n`;
+    if (checklistData.digital?.totalPicks) {
+      pdfContent += `Total Picks: ${checklistData.digital.totalPicks}\n`;
+    }
+    if (checklistData.digital?.onTimePickPercentage) {
+      pdfContent += `On Time Pick Percentage: ${checklistData.digital.onTimePickPercentage}%\n`;
+    }
+    if (checklistData.digital?.presubCount) {
+      pdfContent += `Presub Count: ${checklistData.digital.presubCount}\n`;
+    }
+    if (checklistData.digital?.photos) {
+      Object.entries(checklistData.digital.photos).forEach(([category, photos]) => {
+        if (photos.length > 0) {
+          pdfContent += `${category}: ${photos.length} photos attached\n`;
+        }
+      });
+    }
+    if (checklistData.digital?.notes) {
+      pdfContent += `Notes: ${checklistData.digital.notes}\n`;
+    }
+    pdfContent += `\n`;
+
+    // Food Department Section
+    pdfContent += `FOOD DEPARTMENT:\n`;
+    if (checklistData.food?.returnsCompleted !== undefined) {
+      pdfContent += `Returns Completed: ${checklistData.food.returnsCompleted ? 'Yes' : 'No'}\n`;
+    }
+    if (checklistData.food?.photos) {
+      Object.entries(checklistData.food.photos).forEach(([category, photos]) => {
+        if (photos.length > 0) {
+          pdfContent += `${category}: ${photos.length} photos attached\n`;
+        }
+      });
+    }
+    if (checklistData.food?.notes) {
+      pdfContent += `Notes: ${checklistData.food.notes}\n`;
+    }
+    pdfContent += `\n`;
+
+    // GM Department Section
+    pdfContent += `GM DEPARTMENT:\n`;
+    if (checklistData.gm?.photos) {
+      Object.entries(checklistData.gm.photos).forEach(([category, photos]) => {
+        if (photos.length > 0) {
+          pdfContent += `${category}: ${photos.length} photos attached\n`;
+        }
+      });
+    }
+    if (checklistData.gm?.notes) {
+      pdfContent += `Notes: ${checklistData.gm.notes}\n`;
+    }
+    pdfContent += `\n`;
+
+    // Apparel Department Section
+    pdfContent += `APPAREL DEPARTMENT:\n`;
+    if (checklistData.apparel?.photos) {
+      Object.entries(checklistData.apparel.photos).forEach(([category, photos]) => {
+        if (photos.length > 0) {
+          pdfContent += `${category}: ${photos.length} photos attached\n`;
+        }
+      });
+    }
+    if (checklistData.apparel?.notes) {
+      pdfContent += `Notes: ${checklistData.apparel.notes}\n`;
+    }
+    pdfContent += `\n`;
+
+    // Front End Section
+    pdfContent += `FRONT END:\n`;
+    if (checklistData.frontEnd?.photos) {
+      Object.entries(checklistData.frontEnd.photos).forEach(([category, photos]) => {
+        if (photos.length > 0) {
+          pdfContent += `${category}: ${photos.length} photos attached\n`;
+        }
+      });
+    }
+    if (checklistData.frontEnd?.notes) {
+      pdfContent += `Notes: ${checklistData.frontEnd.notes}\n`;
+    }
+
+    // Add footer and close HTML content
+    htmlContent += `
+        <div class="footer">
+            <p>Generated by Manager Checklist System - ${new Date().toLocaleString()}</p>
+            <p>Store #${userInfo.storeNumber} | Manager: ${userInfo.name}</p>
+        </div>
+    </body></html>`;
+
+    // Generate professional PDF using serverless Chromium with corrected approach
+    logger.info('Starting PDF generation with @sparticuz/chromium');
+
+    let pdfBuffer;
+    try {
+      const chromium = await import('@sparticuz/chromium');
+      const puppeteer = await import('puppeteer-core');
+
+      logger.info('Launching browser with @sparticuz/chromium configuration');
+
+      const browser = await puppeteer.default.launch({
+        args: chromium.default.args,
+        defaultViewport: chromium.default.defaultViewport,
+        executablePath: await chromium.default.executablePath(),
+        headless: chromium.default.headless,
+        ignoreHTTPSErrors: true,
+      });
+
+      logger.info('Browser launched successfully');
+
+      const page = await browser.newPage();
+      await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+
+      pdfBuffer = await page.pdf({
+        format: 'A4',
+        margin: { top: '0.75in', right: '0.75in', bottom: '0.75in', left: '0.75in' },
+        printBackground: true,
+        preferCSSPageSize: true
+      });
+
+      await browser.close();
+      logger.info('PDF generated successfully, size:', pdfBuffer.length);
+
+    } catch (chromiumError) {
+      logger.error('Chromium error:', chromiumError);
+      throw chromiumError;
+    }
+
+    // Return PDF as base64 data URL for direct download (avoid storage issues)
+    const base64Pdf = pdfBuffer.toString('base64');
+    const dataUrl = `data:application/pdf;base64,${base64Pdf}`;
+
+    const dateObj = new Date(date);
+    const weekday = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+    const dateStr = dateObj.toLocaleDateString('en-US');
+    const emailSubject = `Turnover ${weekday} ${dateStr}`;
+    const fileName = `Turnover-${userInfo.storeNumber}-${date}-${userInfo.name}.pdf`;
+
+    logger.info('PDF generated successfully, returning as base64 data URL');
+    logger.info('Email Subject:', emailSubject);
+    logger.info('File name:', fileName);
+
+    return { pdfUrl: dataUrl, emailSubject, fileName };
+
+  } catch (error) {
+    logger.error('Error in PDF generation:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      code: error.code
+    });
+    throw error;
+  }
+}
+
+// Download PDF endpoint
+export const downloadPDF = onRequest({ region: REGION }, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  try {
+    const { fileName } = req.query;
+
+    if (!fileName) {
+      res.status(400).json({ error: 'fileName parameter required' });
+      return;
+    }
+
+    const bucket = storage.bucket('managerchecklist.appspot.com');
+    const file = bucket.file(fileName);
+
+    // Check if file exists
+    const [exists] = await file.exists();
+    if (!exists) {
+      res.status(404).json({ error: 'PDF not found' });
+      return;
+    }
+
+    // Get file metadata
+    const [metadata] = await file.getMetadata();
+
+    // Set headers for download
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${fileName.split('/').pop()}"`,
+      'Content-Length': metadata.size
+    });
+
+    // Stream the file
+    const stream = file.createReadStream();
+    stream.pipe(res);
+
+  } catch (error) {
+    logger.error('Error downloading PDF:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ===== Diagnostic: Check Recent Scan Responses =====
+export const diagnosticScanResponses = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    // Verify admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized: Missing token' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1];
+    const decodedToken = await getAuth().verifyIdToken(idToken);
+    const uid = decodedToken.uid;
+
+    // Verify user is admin
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists || userDoc.data().email !== 'sinaptick@gmail.com') {
+      return res.status(403).json({ error: 'Forbidden: Admin access required' });
+    }
+
+    const { storeNumber, limit = 20 } = req.query;
+
+    let query = db.collection('scans')
+      .orderBy('timestamp', 'desc')
+      .limit(parseInt(limit));
+
+    if (storeNumber) {
+      query = db.collection('scans')
+        .where('storeNumber', '==', String(storeNumber))
+        .orderBy('timestamp', 'desc')
+        .limit(parseInt(limit));
+    }
+
+    const scansSnapshot = await query.get();
+
+    const diagnostics = scansSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        scanId: doc.id,
+        storeNumber: data.storeNumber,
+        areaDescription: data.areaDescription,
+        status: data.status,
+        timestamp: data.timestamp?.toDate?.() || data.timestamp,
+        claimedBy: data.claimedBy || null,
+        claimedByName: data.claimedByName || null,
+        eligibleUsers: data.eligibleUsers || [],
+        eligibleUserCount: (data.eligibleUsers || []).length,
+        responses: data.responses || [],
+        responseBreakdown: {
+          total: (data.responses || []).length,
+          assists: (data.responses || []).filter(r => r.action === 'assist').length,
+          ignores: (data.responses || []).filter(r => r.action === 'ignore').length,
+          timeouts: (data.responses || []).filter(r => r.source === 'timeout').length,
+          buttonIgnores: (data.responses || []).filter(r => r.action === 'ignore' && r.source !== 'timeout').length
+        },
+        timeoutProcessed: data.timeoutProcessed || false,
+        secondaryAlertSent: data.secondaryAlertSent || false
+      };
+    });
+
+    res.json({
+      totalScans: scansSnapshot.size,
+      scans: diagnostics,
+      query: { storeNumber, limit }
+    });
+
+  } catch (error) {
+    logger.error('Error in diagnosticScanResponses:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== Backfill GroupMe Responses =====
+export const backfillGroupMeResponses = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public",
+  timeoutSeconds: 540
+}, async (req, res) => {
+  const origin = req.headers.origin;
+  setCorsHeaders(res, origin);
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    // Verify admin authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized: Missing token' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1];
+    const decodedToken = await getAuth().verifyIdToken(idToken);
+    const uid = decodedToken.uid;
+
+    // Verify user is admin
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists || userDoc.data().email !== 'sinaptick@gmail.com') {
+      return res.status(403).json({ error: 'Forbidden: Admin access required' });
+    }
+
+    logger.info('Starting GroupMe responses backfill...');
+
+    // Find all user messages from GroupMe webhook logs (not bot messages)
+    const webhookLogs = await db.collection('groupme_webhook_logs')
+      .where('message_type', '==', 'user_message')
+      .orderBy('timestamp', 'desc')
+      .limit(500) // Process last 500 user messages
+      .get();
+
+    logger.info(`Found ${webhookLogs.size} GroupMe user messages to process`);
+
+    let updatedCount = 0;
+    let skippedCount = 0;
+    let notFoundCount = 0;
+    let noStoreCount = 0;
+    const results = [];
+
+    // Build a map of group_id -> store number from groupme_bots
+    const botsSnapshot = await db.collection('groupme_bots').get();
+    const groupIdToStore = {};
+    botsSnapshot.forEach(botDoc => {
+      const botData = botDoc.data();
+      if (botData.group_id && botData.store) {
+        groupIdToStore[botData.group_id] = String(botData.store);
+      }
+    });
+
+    logger.info(`Mapped ${Object.keys(groupIdToStore).length} GroupMe groups to stores`);
+
+    for (const webhookDoc of webhookLogs.docs) {
+      const webhookData = webhookDoc.data();
+      const webhookId = webhookDoc.id;
+
+      // Extract response info from webhook log
+      const {
+        group_id,
+        sender_name,
+        user_id,
+        text_preview,
+        timestamp
+      } = webhookData;
+
+      // Map group_id to store number
+      const storeNumber = groupIdToStore[group_id];
+      if (!storeNumber) {
+        noStoreCount++;
+        continue;
+      }
+
+      try {
+        // Find corresponding scan - look for scans within 10 minutes before this message
+        const messageTimestamp = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+        const beforeTime = new Date(messageTimestamp.getTime() - 10 * 60 * 1000); // 10 minutes before
+
+        const scansQuery = await db.collection('scans')
+          .where('storeNumber', '==', storeNumber)
+          .where('timestamp', '>=', beforeTime)
+          .where('timestamp', '<=', messageTimestamp)
+          .where('status', '==', 'pending')
+          .orderBy('timestamp', 'desc')
+          .limit(1)
+          .get();
+
+        if (scansQuery.empty) {
+          notFoundCount++;
+          continue;
+        }
+
+        const scanDoc = scansQuery.docs[0];
+        const scanData = scanDoc.data();
+
+        // Check if already updated (has claimedBy set)
+        if (scanData.claimedBy && scanData.claimedBy !== '') {
+          skippedCount++;
+          continue;
+        }
+
+        // Update the scan with response info
+        const responseEntry = {
+          respondedAt: messageTimestamp,
+          responderName: sender_name || 'Unknown',
+          responderUserId: user_id || '',
+          responseText: text_preview || '',
+          responseSource: 'groupme'
+        };
+
+        await scanDoc.ref.update({
+          status: 'claimed',
+          claimedBy: user_id || '',
+          claimedByName: sender_name || 'Unknown',
+          claimedAt: FieldValue.serverTimestamp(),
+          responses: FieldValue.arrayUnion(responseEntry)
+        });
+
+        logger.info(`Updated scan ${scanDoc.id} with response from ${sender_name} at store ${storeNumber}`);
+        updatedCount++;
+        results.push({
+          scanId: scanDoc.id,
+          store: storeNumber,
+          responder: sender_name
+        });
+
+      } catch (scanError) {
+        logger.error(`Error processing webhook ${webhookId}:`, scanError.message);
+      }
+    }
+
+    const summary = {
+      totalMessagesProcessed: webhookLogs.size,
+      groupsMapped: Object.keys(groupIdToStore).length,
+      scansUpdated: updatedCount,
+      scansSkipped: skippedCount,
+      scansNotFound: notFoundCount,
+      messagesWithoutStore: noStoreCount,
+      sampleResults: results.slice(0, 10)
+    };
+
+    logger.info('Backfill complete', summary);
+    res.status(200).json(summary);
+
+  } catch (error) {
+    logger.error('Error in backfillGroupMeResponses:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// ===== CLEANUP: Delete test/demo scans (HTTP endpoint) =====
+export const cleanupTestScans = onRequest({ 
+  region: REGION,
+  cors: ALLOWED_ORIGINS 
+}, async (req, res) => {
+  try {
+    // Authenticate user
+    const decodedToken = await authenticateUser(req);
+    
+    // Verify admin access
+    const adminCheck = await isAdmin(decodedToken.uid);
+    if (!adminCheck) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    logger.info('Starting cleanup of test/demo scans by admin:', decodedToken.email);
+
+    // Get all scans
+    const scansSnapshot = await db.collection('scans').get();
+    logger.info(`Total scans found: ${scansSnapshot.size}`);
+
+    let deletedCount = 0;
+    const deletedScans = [];
+
+    // Use batched writes (max 500 per batch)
+    let batch = db.batch();
+    let batchCount = 0;
+
+    for (const doc of scansSnapshot.docs) {
+      const data = doc.data();
+      const areaDescription = (data.areaDescription || '').toLowerCase();
+
+      // Check if area description contains "test" or "demo"
+      if (areaDescription.includes('test') || areaDescription.includes('demo')) {
+        logger.info(`Deleting scan: ${doc.id} - Store: ${data.storeNumber} - Area: ${data.areaDescription}`);
+
+        deletedScans.push({
+          id: doc.id,
+          store: data.storeNumber,
+          area: data.areaDescription,
+          timestamp: data.timestamp
+        });
+
+        batch.delete(doc.ref);
+        deletedCount++;
+        batchCount++;
+
+        // Commit batch if we hit the 500 limit
+        if (batchCount >= 500) {
+          await batch.commit();
+          logger.info(`Committed batch of ${batchCount} deletions`);
+          batch = db.batch();
+          batchCount = 0;
+        }
+      }
+    }
+
+    // Commit any remaining deletions
+    if (batchCount > 0) {
+      await batch.commit();
+      logger.info(`Committed final batch of ${batchCount} deletions`);
+    }
+
+    const summary = {
+      totalScans: scansSnapshot.size,
+      deletedCount,
+      remainingScans: scansSnapshot.size - deletedCount,
+      deletedScans: deletedScans.slice(0, 20) // Return first 20 for verification
+    };
+
+    logger.info('Cleanup complete', summary);
+    return res.status(200).json(summary);
+
+  } catch (error) {
+    logger.error('Error during cleanup:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== SECURITY: Custom Claims Management =====
+
+/**
+ * Set admin custom claim for a user
+ * CRITICAL SECURITY: Only allows the super admin (sinaptick@gmail.com) to grant admin privileges
+ */
+export const setAdminClaim = onCall({
+  region: REGION,
+  enforceAppCheck: false // TODO: Enable after App Check is configured
+}, async (request) => {
+  const callerUid = request.auth?.uid;
+
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  // Verify caller is the super admin (server-side check)
+  const callerDoc = await db.collection('users').doc(callerUid).get();
+  if (!callerDoc.exists || callerDoc.data().email !== 'sinaptick@gmail.com') {
+    logger.warn('Unauthorized admin claim attempt', {
+      callerUid,
+      callerEmail: callerDoc.data()?.email
+    });
+    throw new HttpsError('permission-denied', 'Only super admin can grant admin privileges');
+  }
+
+  const { uid, admin } = request.data;
+
+  if (!uid || typeof uid !== 'string') {
+    throw new HttpsError('invalid-argument', 'Valid user UID required');
+  }
+
+  if (typeof admin !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'Admin must be a boolean');
+  }
+
+  try {
+    // Set or remove custom claim
+    const customClaims = admin ? { admin: true } : { admin: false };
+    await getAuth().setCustomUserClaims(uid, customClaims);
+
+    // Also update Firestore for record-keeping
+    await db.collection('users').doc(uid).update({
+      isAdmin: admin,
+      adminClaimSetAt: FieldValue.serverTimestamp(),
+      adminClaimSetBy: callerUid
+    });
+
+    logger.info('Admin custom claim updated', {
+      targetUid: uid,
+      admin,
+      setBy: callerUid
+    });
+
+    return {
+      success: true,
+      message: `Admin claim ${admin ? 'granted to' : 'revoked from'} user ${uid}`
+    };
+
+  } catch (error) {
+    logger.error('Error setting admin claim:', error);
+    throw new HttpsError('internal', `Failed to set admin claim: ${error.message}`);
+  }
+});
+
+/**
+ * Check current user's roles and custom claims
+ * Returns user's custom claims for client-side UI adjustments
+ * NOTE: Never trust client-side for authorization - always verify server-side
+ */
+export const getUserClaims = onCall({
+  region: REGION,
+  enforceAppCheck: false // TODO: Enable after App Check is configured
+}, async (request) => {
+  const uid = request.auth?.uid;
+
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  try {
+    const user = await getAuth().getUser(uid);
+    const userDoc = await db.collection('users').doc(uid).get();
+
+    return {
+      uid,
+      email: user.email,
+      customClaims: user.customClaims || {},
+      isAdmin: user.customClaims?.admin === true,
+      userData: userDoc.exists ? userDoc.data() : null
+    };
+  } catch (error) {
+    logger.error('Error getting user claims:', error);
+    throw new HttpsError('internal', 'Failed to get user claims');
+  }
+});
+
+// ===== SECURITY: Auto-Ignore Old Scans =====
+
+/**
+ * Scheduled function to automatically mark old pending scans as ignored
+ * Runs every 5 minutes to clean up scans older than 10 minutes
+ * This prevents client-side manipulation of auto-ignore logic
+ */
+export const autoIgnoreOldScans = onSchedule({
+  schedule: 'every 5 minutes',
+  region: REGION,
+  timeoutSeconds: 300,
+  retryCount: 3
+}, async (context) => {
+  try {
+    logger.info('Starting auto-ignore old scans job');
+
+    // Calculate 10 minutes ago
+    const tenMinutesAgo = Timestamp.fromDate(
+      new Date(Date.now() - 10 * 60 * 1000)
+    );
+
+    // Find pending scans older than 10 minutes
+    const oldScansQuery = db.collection('scans')
+      .where('status', '==', 'pending')
+      .where('timestamp', '<=', tenMinutesAgo);
+
+    const oldScansSnapshot = await oldScansQuery.get();
+
+    if (oldScansSnapshot.empty) {
+      logger.info('No old scans to auto-ignore');
+      return null;
+    }
+
+    logger.info(`Found ${oldScansSnapshot.size} scans to auto-ignore`);
+
+    // Batch update scans
+    let batch = db.batch();
+    let batchCount = 0;
+    let totalUpdated = 0;
+
+    for (const doc of oldScansSnapshot.docs) {
+      batch.update(doc.ref, {
+        status: 'auto_ignored',
+        autoIgnoredAt: FieldValue.serverTimestamp(),
+        autoIgnoredReason: 'timeout_10min',
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      batchCount++;
+      totalUpdated++;
+
+      // Commit batch every 500 operations (Firestore limit)
+      if (batchCount >= 500) {
+        await batch.commit();
+        logger.info(`Committed batch of ${batchCount} auto-ignores`);
+        batch = db.batch();
+        batchCount = 0;
+      }
+    }
+
+    // Commit remaining operations
+    if (batchCount > 0) {
+      await batch.commit();
+      logger.info(`Committed final batch of ${batchCount} auto-ignores`);
+    }
+
+    logger.info('Auto-ignore job completed', {
+      totalProcessed: oldScansSnapshot.size,
+      totalUpdated
+    });
+
+    return { success: true, scansIgnored: totalUpdated };
+
+  } catch (error) {
+    logger.error('Error in auto-ignore job:', error);
+    throw error; // Will trigger retry
+  }
+});
+
+/**
+ * Manual trigger for auto-ignore logic (admin only)
+ * Useful for testing and manual cleanup
+ */
+export const manualAutoIgnore = onCall({
+  region: REGION,
+  enforceAppCheck: false // TODO: Enable after App Check is configured
+}, async (request) => {
+  const callerUid = request.auth?.uid;
+
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  // Verify caller is admin
+  if (!(await isAdmin(callerUid))) {
+    throw new HttpsError('permission-denied', 'Admin access required');
+  }
+
+  try {
+    logger.info('Manual auto-ignore triggered', { by: callerUid });
+
+    const tenMinutesAgo = Timestamp.fromDate(
+      new Date(Date.now() - 10 * 60 * 1000)
+    );
+
+    const oldScansSnapshot = await db.collection('scans')
+      .where('status', '==', 'pending')
+      .where('timestamp', '<=', tenMinutesAgo)
+      .get();
+
+    if (oldScansSnapshot.empty) {
+      return { success: true, scansIgnored: 0, message: 'No old scans found' };
+    }
+
+    let batch = db.batch();
+    let batchCount = 0;
+
+    for (const doc of oldScansSnapshot.docs) {
+      batch.update(doc.ref, {
+        status: 'auto_ignored',
+        autoIgnoredAt: FieldValue.serverTimestamp(),
+        autoIgnoredReason: 'manual_trigger',
+        autoIgnoredBy: callerUid,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      batchCount++;
+
+      if (batchCount >= 500) {
+        await batch.commit();
+        batch = db.batch();
+        batchCount = 0;
+      }
+    }
+
+    if (batchCount > 0) {
+      await batch.commit();
+    }
+
+    logger.info('Manual auto-ignore completed', {
+      scansIgnored: oldScansSnapshot.size,
+      by: callerUid
+    });
+
+    return {
+      success: true,
+      scansIgnored: oldScansSnapshot.size,
+      message: `Auto-ignored ${oldScansSnapshot.size} old scans`
+    };
+
+  } catch (error) {
+    logger.error('Error in manual auto-ignore:', error);
+    throw new HttpsError('internal', `Failed to auto-ignore scans: ${error.message}`);
+  }
+});
+
+// ===== Admin Send Password Reset Email =====
+export const adminSendPasswordReset = onRequest({
+  region: REGION,
+  cors: { origin: ALLOWED_ORIGINS },
+  invoker: "public"
+}, async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).send("Use POST");
+    
+    // Rate limiting
+    const clientIp = req.ip || req.connection.remoteAddress;
+    const rateLimitResult = await checkRateLimit(clientIp);
+    if (!rateLimitResult.allowed) {
+      return res.status(429).send("Too many requests. Please try again later.");
+    }
+    
+    // Authenticate user and verify admin
+    const decodedToken = await authenticateUser(req);
+    if (!(await isAdmin(decodedToken.uid))) {
+      return res.status(403).send("Admin access required");
+    }
+    
+    const { email } = req.body;
+    if (!email) return res.status(400).send("Missing email");
+    
+    logger.info("Admin sending password reset email", { 
+      email, 
+      admin: decodedToken.uid
+    });
+    
+    // Verify user exists
+    const auth = getAuth();
+    let user;
+    try {
+      user = await auth.getUserByEmail(email);
+    } catch (error) {
+      if (error.code === 'auth/user-not-found') {
+        return res.status(404).send("User not found");
+      }
+      throw error;
+    }
+    
+    // Generate password reset link (Firebase default: 1 hour expiration)
+    const resetLink = await auth.generatePasswordResetLink(email);
+
+    logger.info("Password reset link generated", {
+      email,
+      admin: decodedToken.uid,
+      userId: user.uid
+    });
+
+    // Send email using SendGrid
+    const apiKey = process.env.SENDGRID_API_KEY;
+    if (!apiKey) {
+      logger.warn("SENDGRID_API_KEY not configured, returning link without sending email");
+      return res.json({
+        success: true,
+        message: "Password reset link generated (email not sent - SendGrid not configured)",
+        resetLink,
+        user: {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName || null
+        }
+      });
+    }
+
+    sgMail.setApiKey(apiKey);
+
+    const emailContent = {
+      to: email,
+      from: {
+        email: 'support@qrcallbox.com',
+        name: 'QRCallBox Support'
+      },
+      subject: 'Password Reset Request - QRCallBox',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+            <h2 style="color: #333; margin-top: 0;">Password Reset Request</h2>
+            <p>Hi ${user.displayName || 'there'},</p>
+            <p>We received a request to reset your password for your QRCallBox account.</p>
+          </div>
+
+          <div style="background: #e7f3ff; padding: 20px; border-radius: 6px; margin: 20px 0; text-align: center;">
+            <p style="margin-bottom: 15px;">Click the button below to reset your password:</p>
+            <a href="${resetLink}" style="display: inline-block; background: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+              Reset Password
+            </a>
+          </div>
+
+          <div style="background: #fff3cd; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #ffc107;">
+            <p style="margin: 0; color: #856404;">
+              <strong>⚠️ Important:</strong> This link will expire in <strong>1 hour</strong> for security reasons.
+            </p>
+          </div>
+
+          <div style="border-top: 2px solid #dee2e6; padding-top: 20px; margin-top: 30px;">
+            <p><strong>If you didn't request this password reset:</strong></p>
+            <p>You can safely ignore this email. Your password will not be changed unless you click the link above and create a new password.</p>
+
+            <p style="color: #666; font-size: 12px; margin-top: 30px;">
+              Best regards,<br>
+              QRCallBox Support Team
+            </p>
+
+            <p style="color: #999; font-size: 11px; margin-top: 20px;">
+              If the button above doesn't work, copy and paste this link into your browser:<br>
+              <span style="word-break: break-all;">${resetLink}</span>
+            </p>
+          </div>
+        </div>
+      `
+    };
+
+    await sgMail.send(emailContent);
+
+    logger.info("Password reset email sent successfully", {
+      email,
+      admin: decodedToken.uid,
+      userId: user.uid
+    });
+
+    res.json({
+      success: true,
+      message: "Password reset email sent successfully",
+      user: {
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName || null
+      }
+    });
+
+  } catch (error) {
+    logger.error("Admin send password reset error:", error);
     res.status(500).send("Internal server error: " + error.message);
   }
 });

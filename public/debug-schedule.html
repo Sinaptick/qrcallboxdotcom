@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Schedule Debug Tool</title>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+        .output { background: #2d2d2d; padding: 15px; border-radius: 5px; margin: 10px 0; }
+        .label { color: #4ec9b0; font-weight: bold; }
+        .value { color: #ce9178; }
+        .error { color: #f48771; }
+        .success { color: #4ec9b0; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Schedule Debug Tool</h1>
+    <div id="status">Loading...</div>
+    <div id="output"></div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBxaLpsCeZGcCrJUYL67FeATNUOBDMMR_Y",
+            authDomain: "qrwebaccdb.firebaseapp.com",
+            projectId: "qrwebaccdb",
+            storageBucket: "qrwebaccdb.firebasestorage.app",
+            messagingSenderId: "611687644130",
+            appId: "1:611687644130:web:36eda1c96300907ee397bb"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const div = document.createElement('div');
+            div.className = `output ${type}`;
+            div.innerHTML = message;
+            output.appendChild(div);
+        }
+
+        async function debugSchedule() {
+            document.getElementById('output').innerHTML = '';
+
+            try {
+                const user = auth.currentUser;
+                if (!user) {
+                    log('❌ Not logged in. Please log in first.', 'error');
+                    return;
+                }
+
+                log(`<span class="label">🔐 Logged in as:</span> <span class="value">${user.email}</span>`);
+
+                // Get user document
+                const userDoc = await db.collection('users').doc(user.uid).get();
+                const userData = userDoc.data();
+
+                log(`<span class="label">📄 User ID:</span> <span class="value">${user.uid}</span>`);
+                log(`<span class="label">🏪 Store Number:</span> <span class="value">${userData.storeNumber}</span>`);
+                log(`<span class="label">🕐 Timezone:</span> <span class="value">${userData.timezone || 'Not set'}</span>`);
+                log(`<span class="label">✅ Approved:</span> <span class="value">${userData.approved ? 'Yes' : 'No'}</span>`);
+                log(`<span class="label">🔔 Notifications Enabled:</span> <span class="value">${userData.notificationsEnabled ? 'Yes' : 'No'}</span>`);
+
+                // Check work schedule
+                const schedule = userData.workSchedule;
+                log(`<span class="label">📅 Work Schedule Exists:</span> <span class="value">${schedule ? 'Yes' : 'No'}</span>`);
+
+                if (schedule) {
+                    log('<br><span class="label">📋 Full Work Schedule:</span>');
+                    log(`<pre>${JSON.stringify(schedule, null, 2)}</pre>`);
+
+                    // Check today's schedule
+                    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+                    const today = days[new Date().getDay()];
+
+                    log(`<br><span class="label">📆 Today is:</span> <span class="value">${today.toUpperCase()}</span>`);
+
+                    const todaySchedule = schedule[today];
+                    if (todaySchedule) {
+                        log(`<span class="label">✅ ${today.toUpperCase()} Schedule:</span>`);
+                        log(`<pre>${JSON.stringify(todaySchedule, null, 2)}</pre>`);
+
+                        if (todaySchedule.isWorkingDay) {
+                            log(`<span class="success">✅ Marked as working day</span>`);
+                            log(`<span class="label">⏰ Hours:</span> <span class="value">${todaySchedule.startHour}:${String(todaySchedule.startMinute).padStart(2,'0')} - ${todaySchedule.endHour}:${String(todaySchedule.endMinute).padStart(2,'0')}</span>`);
+
+                            // Check if currently in shift
+                            const now = new Date();
+                            const currentMinutes = now.getHours() * 60 + now.getMinutes();
+                            const startMinutes = todaySchedule.startHour * 60 + todaySchedule.startMinute;
+                            const endMinutes = todaySchedule.endHour * 60 + todaySchedule.endMinute;
+                            const isOnShift = currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+
+                            log(`<span class="label">⏰ Current time:</span> <span class="value">${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}</span>`);
+                            log(`<span class="label">🎯 Currently on shift:</span> <span class="${isOnShift ? 'success' : 'error'}">${isOnShift ? 'YES ✅' : 'NO ❌'}</span>`);
+                        } else {
+                            log(`<span class="error">❌ Marked as NOT working day</span>`);
+                        }
+                    } else {
+                        log(`<span class="error">❌ No schedule entry for ${today.toUpperCase()}</span>`);
+                    }
+                } else {
+                    log(`<span class="error">❌ No work schedule configured!</span>`);
+                }
+
+                // Check if they show up in Active Associates API
+                log('<br><span class="label">🔄 Checking Active Associates API...</span>');
+
+                const token = await user.getIdToken();
+                const response = await fetch('/api/getActiveAssociates', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ storeNumber: userData.storeNumber })
+                });
+
+                const data = await response.json();
+                log(`<span class="label">📊 Active Associates Count:</span> <span class="value">${data.activeAssociates.length}</span>`);
+
+                const myEntry = data.activeAssociates.find(a => a.id === user.uid);
+                if (myEntry) {
+                    log(`<span class="success">✅ YOU ARE IN THE LIST!</span>`);
+                    log(`<pre>${JSON.stringify(myEntry, null, 2)}</pre>`);
+                } else {
+                    log(`<span class="error">❌ YOU ARE NOT IN THE ACTIVE ASSOCIATES LIST</span>`);
+                    log(`<span class="label">Possible reasons:</span>`);
+                    log(`<ul style="margin-left: 20px;">
+                        <li>No recent activity (last 96 hours)</li>
+                        <li>Not marked as on shift for current time</li>
+                        <li>Notifications disabled</li>
+                        <li>Not approved</li>
+                        <li>No work schedule configured</li>
+                    </ul>`);
+                }
+
+            } catch (error) {
+                log(`<span class="error">❌ Error: ${error.message}</span>`, 'error');
+                console.error(error);
+            }
+        }
+
+        auth.onAuthStateChanged(user => {
+            if (user) {
+                document.getElementById('status').innerHTML = '<button onclick="debugSchedule()">🔍 Debug My Schedule</button>';
+            } else {
+                document.getElementById('status').innerHTML = '❌ Not logged in. <a href="/" style="color: #4ec9b0;">Go to QRCall and log in first</a>, then come back here.';
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 export function validatePassword(pw) {
-  return /^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(pw);
+  return /^(?=.*[!@#$%^&*(),.?":{}|<>]).{8,}$/.test(pw);
 }
 
 export function mapAuthError(err) {

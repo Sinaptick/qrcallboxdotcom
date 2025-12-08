@@ -1,10 +1,32 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Helper function to check if user is admin using Custom Claims (secure, server-side)
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
     // Users collection - users can only read/write their own profile
     match /users/{userId} {
+      // Helper function to get user's store number as string
+      function getUserStore() {
+        let userStore = get(/databases/$(database)/documents/users/$(request.auth.uid)).data.storeNumber;
+        return userStore is string ? userStore : string(userStore);
+      }
+
+      // Helper function to get target user's store number as string
+      function getTargetUserStore() {
+        let targetStore = resource.data.storeNumber;
+        return targetStore is string ? targetStore : string(targetStore);
+      }
+
       // Allow users to read their own document
       allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Allow users to read other users at the same store (for Active Associates)
+      allow read: if request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getUserStore() == getTargetUserStore();
 
       // Allow users to create their own document (for TOS acceptance on first login)
       allow create: if request.auth != null && request.auth.uid == userId;
@@ -15,15 +37,11 @@ service cloud.firestore {
       // Allow users to delete their own document
       allow delete: if request.auth != null && request.auth.uid == userId;
 
-      // Allow admins to read all user documents
-      allow read: if request.auth != null &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      // Allow admins to read all user documents (using Custom Claims)
+      allow read: if isAdmin();
 
-      // Allow admins to update any user document
-      allow update: if request.auth != null &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      // Allow admins to update any user document (using Custom Claims)
+      allow update: if isAdmin();
     }
 
     // QR tokens collection - only Functions can write, authenticated users can read
@@ -37,9 +55,7 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow create, update: if false; // Only Functions can create/update via Admin SDK
       // Allow admin to delete logs for cleanup purposes
-      allow delete: if request.auth != null && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      allow delete: if isAdmin();
     }
 
     // GroupMe tokens collection - users can only access their own tokens
@@ -64,40 +80,27 @@ service cloud.firestore {
     match /support_tickets/{ticketId} {
       // Users can create their own tickets
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      
-      // Users can read their own tickets
-      allow read: if request.auth != null && 
-        (resource.data.userId == request.auth.uid || 
-         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com'));
-      
+
+      // Users can read their own tickets, or admin can read all
+      allow read: if request.auth != null &&
+        (resource.data.userId == request.auth.uid || isAdmin());
+
       // Only admin can update tickets (for responses)
-      allow update: if request.auth != null && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
-      
-      // Admin can read all tickets (for list queries)
-      allow read: if request.auth != null && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      allow update: if isAdmin();
     }
 
     // Blocked IPs collection - only Functions/Admin can write, admin can read
     match /blocked_ips/{ipAddress} {
-      // Only admin can read blocked IPs
-      allow read: if request.auth != null && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      // Only admin can read blocked IPs (using Custom Claims)
+      allow read: if isAdmin();
       // Only Functions can write via Admin SDK
       allow write: if false;
     }
 
     // Spam logs collection - only Functions can write, admin can read
     match /spam_logs/{logId} {
-      // Only admin can read spam logs
-      allow read: if request.auth != null && 
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      // Only admin can read spam logs (using Custom Claims)
+      allow read: if isAdmin();
       // Only Functions can write via Admin SDK
       allow write: if false;
     }
@@ -111,16 +114,12 @@ service cloud.firestore {
     // Tasks collection - for APTasks calendar
     match /tasks/{taskId} {
       allow read: if request.auth != null;
-      allow create, update, delete: if request.auth != null &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+      allow create, update, delete: if isAdmin();
 
       // Task links subcollection
       match /links/{linkId} {
         allow read: if request.auth != null;
-        allow write: if request.auth != null &&
-          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com';
+        allow write: if isAdmin();
       }
 
       // Audit log - append-only
@@ -145,11 +144,10 @@ service cloud.firestore {
         return scanStore is string ? scanStore : string(scanStore);
       }
       
-      // Users can read scans for their own store number
-      allow read: if request.auth != null && 
+      // Users can read scans for their own store number, or admin can read all
+      allow read: if request.auth != null &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        (getScanStore() == getUserStore() || 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'sinaptick@gmail.com');
+        (getScanStore() == getUserStore() || isAdmin());
       
       // Users can update scans to claim assistance (set claimedBy, claimedByName, claimedAt)
       allow update: if request.auth != null && 

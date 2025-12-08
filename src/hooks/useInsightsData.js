@@ -86,9 +86,13 @@ export function useInsightsData(active, db, user = null) {
           setAreas(areaOptions);
           
           // Set defaults only if nothing is selected yet
+          let defaultStores = [];
           setSelectedStores(prev => {
-            if (prev.length > 0) return prev; // Don't override existing selection
-            
+            if (prev.length > 0) {
+              defaultStores = prev;
+              return prev; // Don't override existing selection
+            }
+
             // Default to user's home store or current store
             let defaultStore = null;
             if (user?.homeStore) {
@@ -96,25 +100,42 @@ export function useInsightsData(active, db, user = null) {
             } else if (user?.storeNumber) {
               defaultStore = String(user.storeNumber);
             }
-            
+
             // Check if default store exists in available options
             if (defaultStore && storeOptions.includes(defaultStore)) {
+              defaultStores = [defaultStore];
               return [defaultStore];
             }
-            
+
             // Fallback to empty selection
             return [];
           });
-          
+
           // Default to current week (most recent week)
           setSelectedWeek(prev => {
             if (prev.length > 0) return prev; // Don't override existing selection
             return weekOptions.length > 0 ? [weekOptions[0]] : [];
           });
-          
-          // Default to all areas
+
+          // Default to areas filtered by selected store(s)
           setSelectedAreas(prev => {
             if (prev.length > 0) return prev; // Don't override existing selection
+
+            // Filter areas based on the default selected stores
+            if (defaultStores.length > 0) {
+              const relevantLogs = logsArr.filter(log => {
+                if (!log.store) return false;
+                const normalizedLogStore = String(log.store).replace(/^0+/, '') || '0';
+                const normalizedSelectedStores = defaultStores.map(store => {
+                  return String(store).replace(/^0+/, '') || '0';
+                });
+                return normalizedSelectedStores.includes(normalizedLogStore);
+              });
+              const relevantAreas = new Set(relevantLogs.map(log => log.area).filter(Boolean));
+              return areaOptions.filter(area => relevantAreas.has(area));
+            }
+
+            // If no store selected, show all areas
             return areaOptions;
           });
         }

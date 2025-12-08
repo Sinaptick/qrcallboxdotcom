@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Account Deletion - QRcallbox</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=5" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+      .section-heading {
+        scroll-margin-top: 2rem;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50 text-gray-900">
+    <div class="max-w-4xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+      <!-- Header -->
+      <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h1 class="text-3xl font-bold text-gray-900">Account Deletion</h1>
+            <p class="text-sm text-gray-600 mt-2">
+              Delete your QRcallbox account and associated data
+            </p>
+          </div>
+          <a href="/" class="text-blue-600 hover:text-blue-700 text-sm font-medium">
+            ← Back to QRcallbox
+          </a>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loadingState" class="bg-white rounded-lg shadow-sm p-8 text-center">
+        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <p class="mt-4 text-gray-600">Loading...</p>
+      </div>
+
+      <!-- Logged In UI -->
+      <div id="loggedInUI" class="hidden">
+        <!-- User Info -->
+        <div class="bg-blue-50 border-l-4 border-blue-400 p-6 mb-6 rounded-lg">
+          <div class="flex">
+            <div class="flex-shrink-0">
+              <svg class="h-6 w-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+              </svg>
+            </div>
+            <div class="ml-3">
+              <h3 class="text-lg font-medium text-blue-900">Logged In</h3>
+              <p class="mt-2 text-sm text-blue-800">
+                Email: <span id="userEmail" class="font-semibold"></span>
+              </p>
+              <p class="text-sm text-blue-800">
+                You can delete your account directly from this page.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Important Notice -->
+        <div class="bg-red-50 border-l-4 border-red-400 p-6 mb-6 rounded-lg">
+          <div class="flex">
+            <div class="flex-shrink-0">
+              <svg class="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+              </svg>
+            </div>
+            <div class="ml-3">
+              <h3 class="text-lg font-medium text-red-900">Warning: Account Deletion is Permanent</h3>
+              <p class="mt-2 text-sm text-red-800">
+                Once you confirm deletion, you will lose access to all your data immediately. This action cannot be undone.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Deletion Confirmation Card -->
+        <div class="bg-white rounded-lg shadow-sm p-6 sm:p-8">
+          <h2 class="text-2xl font-semibold text-gray-900 mb-4">Delete Your Account</h2>
+
+          <div class="bg-gray-50 rounded-lg p-5 mb-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-3">What will be deleted:</h3>
+            <ul class="list-disc pl-6 text-gray-700 space-y-1">
+              <li>Your account profile and login credentials</li>
+              <li>All response history and analytics</li>
+              <li>GroupMe bot connections and tokens</li>
+              <li>Support tickets and pending requests</li>
+              <li>Work schedule and preferences</li>
+              <li>All mobile app registrations</li>
+            </ul>
+          </div>
+
+          <div class="bg-yellow-50 rounded-lg p-5 mb-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-3">Before you proceed:</h3>
+            <ul class="list-disc pl-6 text-gray-700 space-y-1">
+              <li>Export any data you want to keep (contact support)</li>
+              <li>Close or transfer your GroupMe bots</li>
+              <li>Notify your manager if you're an admin</li>
+              <li>Complete any pending support tickets</li>
+            </ul>
+          </div>
+
+          <!-- Confirmation Checkbox -->
+          <div class="mb-6">
+            <label class="flex items-start">
+              <input type="checkbox" id="confirmDelete" class="mt-1 h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500">
+              <span class="ml-2 text-sm text-gray-700">
+                I understand that this action is <strong>permanent and irreversible</strong>. All my data will be permanently deleted and cannot be recovered.
+              </span>
+            </label>
+          </div>
+
+          <!-- Delete Button -->
+          <div class="flex items-center justify-between">
+            <a href="/" class="text-gray-600 hover:text-gray-900 text-sm font-medium">
+              ← Cancel and go back
+            </a>
+            <button
+              id="deleteButton"
+              disabled
+              class="bg-red-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed transition"
+            >
+              Delete My Account Permanently
+            </button>
+          </div>
+
+          <!-- Status Messages -->
+          <div id="deleteStatus" class="mt-4 hidden"></div>
+        </div>
+      </div>
+
+      <!-- Not Logged In UI (Email Process) -->
+      <div id="notLoggedInUI" class="hidden">
+        <!-- Login Prompt -->
+        <div class="bg-blue-50 border-l-4 border-blue-400 p-6 mb-6 rounded-lg">
+          <div class="flex">
+            <div class="flex-shrink-0">
+              <svg class="h-6 w-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+            </div>
+            <div class="ml-3">
+              <h3 class="text-lg font-medium text-blue-900">Quick Self-Service Deletion Available</h3>
+              <p class="mt-2 text-sm text-blue-800">
+                <a href="/" class="font-semibold underline">Log in to your account</a> to delete it immediately. Otherwise, follow the email process below.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Important Notice -->
+        <div class="bg-red-50 border-l-4 border-red-400 p-6 mb-6 rounded-lg">
+          <div class="flex">
+            <div class="flex-shrink-0">
+              <svg class="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+              </svg>
+            </div>
+            <div class="ml-3">
+              <h3 class="text-lg font-medium text-red-900">Important: Account Deletion is Permanent</h3>
+              <p class="mt-2 text-sm text-red-800">
+                Once your account is deleted, you will lose access to all your data, including response history, analytics, and settings. This action cannot be undone.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="bg-white rounded-lg shadow-sm p-6 sm:p-8 prose prose-blue max-w-none">
+          <!-- How to Delete via Email -->
+          <section id="how-to-delete" class="mb-8 section-heading">
+            <h2 class="text-2xl font-semibold text-gray-900 mb-4">Account Deletion via Email</h2>
+
+            <div class="bg-green-50 rounded-lg p-5 mb-4">
+              <h3 class="text-xl font-medium text-gray-900 mb-3">Step 1: Submit Deletion Request</h3>
+              <p class="text-gray-700 mb-3">
+                Send an email to our support team with the following information:
+              </p>
+
+              <div class="bg-white rounded p-4 mb-3">
+                <p class="text-gray-700 mb-1"><strong>To:</strong> <a href="mailto:sinaptick@gmail.com" class="text-blue-600 hover:text-blue-700">sinaptick@gmail.com</a></p>
+                <p class="text-gray-700 mb-1"><strong>Subject:</strong> Account Deletion Request - QRcallbox</p>
+                <p class="text-gray-700 mb-3"><strong>Include in email:</strong></p>
+                <ul class="list-disc pl-6 text-gray-700 space-y-1">
+                  <li>Your full name</li>
+                  <li>Email address associated with your account</li>
+                  <li>Store number (if applicable)</li>
+                  <li>Reason for deletion (optional but helpful)</li>
+                  <li>Confirmation statement: "I understand this action is permanent"</li>
+                </ul>
+              </div>
+
+              <p class="text-sm text-gray-600 italic">
+                Email template example:
+              </p>
+              <div class="bg-gray-100 rounded p-3 mt-2 text-sm font-mono">
+                Subject: Account Deletion Request - QRcallbox<br><br>
+
+                Hello,<br><br>
+
+                I would like to delete my QRcallbox account.<br><br>
+
+                Full Name: [Your Name]<br>
+                Email: [your.email@example.com]<br>
+                Store Number: [Your Store #]<br>
+                Reason: [Optional]<br><br>
+
+                I understand this action is permanent and cannot be undone.<br><br>
+
+                Thank you,<br>
+                [Your Name]
+              </div>
+            </div>
+
+            <div class="bg-green-50 rounded-lg p-5 mb-4">
+              <h3 class="text-xl font-medium text-gray-900 mb-3">Step 2: Identity Verification</h3>
+              <p class="text-gray-700 mb-2">
+                For security purposes, we will verify your identity before processing the deletion:
+              </p>
+              <ul class="list-disc pl-6 text-gray-700 space-y-1">
+                <li>Confirmation email sent to your registered email address</li>
+                <li>You must respond from the same email within 48 hours</li>
+                <li>Additional verification may be required for admin accounts</li>
+              </ul>
+            </div>
+
+            <div class="bg-green-50 rounded-lg p-5 mb-4">
+              <h3 class="text-xl font-medium text-gray-900 mb-3">Step 3: Processing & Confirmation</h3>
+              <p class="text-gray-700 mb-2">
+                Once verified, we will:
+              </p>
+              <ul class="list-disc pl-6 text-gray-700 space-y-1">
+                <li>Process your deletion request within 5 business days</li>
+                <li>Send final confirmation email when deletion is complete</li>
+                <li>Your account will be immediately inaccessible</li>
+                <li>Backend data purge occurs within 30 days</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- What Gets Deleted -->
+          <section id="what-gets-deleted" class="mb-8 section-heading">
+            <h2 class="text-2xl font-semibold text-gray-900 mb-4">What Gets Deleted</h2>
+
+            <p class="text-gray-700 mb-4">
+              When you delete your QRcallbox account, the following information will be permanently removed:
+            </p>
+
+            <h3 class="text-xl font-medium text-gray-900 mb-3">Personal Information</h3>
+            <ul class="list-disc pl-6 mb-4 text-gray-700 space-y-1">
+              <li>Account profile (name, email, phone number, job title)</li>
+              <li>Login credentials and authentication data</li>
+              <li>Store assignments and access permissions</li>
+              <li>User preferences and settings</li>
+              <li>FCM tokens and device registrations</li>
+            </ul>
+
+            <h3 class="text-xl font-medium text-gray-900 mb-3">Activity Data</h3>
+            <ul class="list-disc pl-6 mb-4 text-gray-700 space-y-1">
+              <li>Response history and assistance records</li>
+              <li>Personal analytics and performance metrics</li>
+              <li>Support tickets submitted by you</li>
+              <li>Work schedule configurations</li>
+            </ul>
+
+            <h3 class="text-xl font-medium text-gray-900 mb-3">Integration Data</h3>
+            <ul class="list-disc pl-6 mb-4 text-gray-700 space-y-1">
+              <li>GroupMe bot connections and OAuth tokens</li>
+              <li>Workvivo integration settings</li>
+              <li>Third-party service authorizations</li>
+            </ul>
+          </section>
+
+          <!-- FAQ -->
+          <section id="faq" class="mb-8 section-heading">
+            <h2 class="text-2xl font-semibold text-gray-900 mb-4">Frequently Asked Questions</h2>
+
+            <div class="mb-4">
+              <h4 class="font-semibold text-gray-900 mb-1">Can I delete my account instantly?</h4>
+              <p class="text-gray-700 ml-4">Yes! <a href="/" class="text-blue-600 hover:text-blue-700">Log in to your account</a> and visit this page again to delete your account immediately without waiting for email verification.</p>
+            </div>
+
+            <div class="mb-4">
+              <h4 class="font-semibold text-gray-900 mb-1">Will deleting my account affect other users at my store?</h4>
+              <p class="text-gray-700 ml-4">No. Deleting your account only removes your personal data. Other users will continue to have full access to the system. If you're the only admin, notify your store manager to assign a new admin before deletion.</p>
+            </div>
+
+            <div class="mb-4">
+              <h4 class="font-semibold text-gray-900 mb-1">Can I recover my account after deletion?</h4>
+              <p class="text-gray-700 ml-4">No. Account deletion is permanent. You would need to create a new account, which requires administrator approval and starts fresh with no previous data.</p>
+            </div>
+
+            <div class="mb-4">
+              <h4 class="font-semibold text-gray-900 mb-1">How long does the deletion process take?</h4>
+              <p class="text-gray-700 ml-4">If you're logged in, deletion is immediate. Via email: account deactivation occurs within 5 business days, with complete data purge within 30 days.</p>
+            </div>
+
+            <div class="mb-4">
+              <h4 class="font-semibold text-gray-900 mb-1">What if I'm having issues and considering deletion?</h4>
+              <p class="text-gray-700 ml-4">Please contact support first at sinaptick@gmail.com. Many issues can be resolved without deleting your account. We're here to help!</p>
+            </div>
+          </section>
+
+          <!-- Contact Support -->
+          <section id="contact" class="mb-8 section-heading">
+            <h2 class="text-2xl font-semibold text-gray-900 mb-4">Need Help?</h2>
+
+            <div class="bg-blue-50 rounded-lg p-5 mb-4">
+              <h3 class="text-xl font-medium text-gray-900 mb-3">Contact Support</h3>
+              <p class="text-gray-700 mb-3">
+                Before deleting your account, consider reaching out to our support team. We may be able to resolve your concerns.
+              </p>
+              <p class="text-gray-700 mb-1"><strong>Email:</strong> <a href="mailto:sinaptick@gmail.com" class="text-blue-600 hover:text-blue-700">sinaptick@gmail.com</a></p>
+              <p class="text-gray-700 mb-1"><strong>Support Page:</strong> <a href="/support.html" class="text-blue-600 hover:text-blue-700">QRcallbox Support Center</a></p>
+              <p class="text-gray-700"><strong>Response Time:</strong> 24-48 hours for standard requests</p>
+            </div>
+          </section>
+
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="bg-white rounded-lg shadow-sm p-6 mt-6">
+        <div class="text-sm text-gray-600 space-y-1">
+          <p><strong>Account Deletion</strong> - QRcallbox</p>
+          <p><strong>Last Updated:</strong> January 2025</p>
+          <p><strong>Deletion Requests:</strong> <a href="mailto:sinaptick@gmail.com" class="text-blue-600 hover:text-blue-700">sinaptick@gmail.com</a></p>
+          <p class="pt-2 border-t border-gray-200 mt-3">© 2024-2025 Shane Smith. All Rights Reserved.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+      try {
+        console.log('[DeleteAccount] Loading Firebase modules...');
+        const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js');
+        const { getAuth, onAuthStateChanged } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js');
+        console.log('[DeleteAccount] Firebase modules loaded successfully');
+
+      // Firebase configuration
+      const firebaseConfig = {
+        apiKey: "AIzaSyCbpXuSt3UHAWtAfiKbVx621vwpL5cKnkA",
+        authDomain: "qrwebaccdb.firebaseapp.com",
+        projectId: "qrwebaccdb",
+        storageBucket: "qrwebaccdb.appspot.com",
+        messagingSenderId: "611687644130",
+        appId: "1:611687644130:web:3f4011c00e1baae1e397bb",
+        measurementId: "G-JXF9XEFCD4",
+      };
+
+      // Initialize Firebase
+      console.log('[DeleteAccount] Initializing Firebase...');
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      console.log('[DeleteAccount] Firebase initialized, getting auth instance...');
+
+      // DOM elements
+      const loadingState = document.getElementById('loadingState');
+      const loggedInUI = document.getElementById('loggedInUI');
+      const notLoggedInUI = document.getElementById('notLoggedInUI');
+      const userEmailSpan = document.getElementById('userEmail');
+      const confirmCheckbox = document.getElementById('confirmDelete');
+      const deleteButton = document.getElementById('deleteButton');
+      const deleteStatus = document.getElementById('deleteStatus');
+
+      // Check auth state
+      console.log('[DeleteAccount] Setting up auth state listener...');
+      console.log('[DeleteAccount] Auth object:', auth);
+      console.log('[DeleteAccount] Current user (immediate):', auth.currentUser);
+
+      let authStateResolved = false;
+
+      // Set a timeout in case auth state never resolves
+      const authTimeout = setTimeout(() => {
+        if (!authStateResolved) {
+          console.error('[DeleteAccount] Auth state listener timed out after 10 seconds');
+          loadingState.classList.add('hidden');
+          notLoggedInUI.classList.remove('hidden');
+
+          // Show warning message
+          const warningDiv = document.createElement('div');
+          warningDiv.className = 'bg-yellow-50 border-l-4 border-yellow-400 p-6 mb-6 rounded-lg';
+          warningDiv.innerHTML = `
+            <div class="flex">
+              <div class="flex-shrink-0">
+                <svg class="h-6 w-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+              </div>
+              <div class="ml-3">
+                <h3 class="text-lg font-medium text-yellow-900">Authentication Check Timed Out</h3>
+                <p class="mt-2 text-sm text-yellow-800">
+                  Unable to verify login status. If you're logged in, try <a href="/" class="underline font-semibold">returning to the main app</a> and coming back to this page.
+                </p>
+              </div>
+            </div>
+          `;
+          notLoggedInUI.insertBefore(warningDiv, notLoggedInUI.firstChild);
+        }
+      }, 10000);
+
+      // Try using authStateReady as a fallback
+      auth.authStateReady().then(() => {
+        console.log('[DeleteAccount] Auth state ready. Current user:', auth.currentUser?.email || 'none');
+        if (!authStateResolved) {
+          authStateResolved = true;
+          clearTimeout(authTimeout);
+          loadingState.classList.add('hidden');
+
+          if (auth.currentUser) {
+            console.log('[DeleteAccount] Showing logged-in UI (via authStateReady)');
+            loggedInUI.classList.remove('hidden');
+            userEmailSpan.textContent = auth.currentUser.email;
+          } else {
+            console.log('[DeleteAccount] Showing not-logged-in UI (via authStateReady)');
+            notLoggedInUI.classList.remove('hidden');
+          }
+        }
+      }).catch((error) => {
+        console.error('[DeleteAccount] authStateReady error:', error);
+      });
+
+      onAuthStateChanged(auth, (user) => {
+        if (!authStateResolved) {
+          authStateResolved = true;
+          clearTimeout(authTimeout);
+
+          console.log('[DeleteAccount] Auth state changed. User:', user ? user.email : 'not logged in');
+          loadingState.classList.add('hidden');
+
+          if (user) {
+            // User is logged in
+            console.log('[DeleteAccount] Showing logged-in UI');
+            loggedInUI.classList.remove('hidden');
+            userEmailSpan.textContent = user.email;
+          } else {
+            // User is not logged in
+            console.log('[DeleteAccount] Showing not-logged-in UI');
+            notLoggedInUI.classList.remove('hidden');
+          }
+        }
+      });
+
+      // Enable delete button when checkbox is checked
+      if (confirmCheckbox && deleteButton) {
+        confirmCheckbox.addEventListener('change', (e) => {
+          deleteButton.disabled = !e.target.checked;
+        });
+      }
+
+      // Handle delete button click
+      if (deleteButton) {
+        deleteButton.addEventListener('click', async () => {
+          if (!confirm('Are you absolutely sure? This will permanently delete your account and all associated data. This action cannot be undone.')) {
+            return;
+          }
+
+          deleteButton.disabled = true;
+          deleteButton.textContent = 'Deleting...';
+          deleteStatus.classList.remove('hidden');
+          deleteStatus.className = 'mt-4 bg-blue-50 border-l-4 border-blue-400 p-4 rounded';
+          deleteStatus.innerHTML = '<p class="text-blue-800">Processing your account deletion request...</p>';
+
+          try {
+            const user = auth.currentUser;
+            if (!user) {
+              throw new Error('Not authenticated');
+            }
+
+            // Get ID token
+            const idToken = await user.getIdToken();
+
+            // Call delete API
+            const response = await fetch('/api/delete-account', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${idToken}`
+              }
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+              throw new Error(data.error || data.message || 'Failed to delete account');
+            }
+
+            // Success
+            deleteStatus.className = 'mt-4 bg-green-50 border-l-4 border-green-400 p-4 rounded';
+            deleteStatus.innerHTML = `
+              <h3 class="text-green-900 font-semibold mb-2">Account Deleted Successfully</h3>
+              <p class="text-green-800 mb-2">Your account and all associated data have been permanently deleted.</p>
+              <p class="text-green-800">You will be redirected to the login page in 5 seconds...</p>
+            `;
+
+            // Redirect after 5 seconds
+            setTimeout(() => {
+              window.location.href = '/';
+            }, 5000);
+
+          } catch (error) {
+            console.error('Delete account error:', error);
+            deleteStatus.className = 'mt-4 bg-red-50 border-l-4 border-red-400 p-4 rounded';
+            deleteStatus.innerHTML = `
+              <h3 class="text-red-900 font-semibold mb-2">Deletion Failed</h3>
+              <p class="text-red-800 mb-2">${error.message}</p>
+              <p class="text-red-800">Please try again or contact support at sinaptick@gmail.com</p>
+            `;
+            deleteButton.disabled = false;
+            deleteButton.textContent = 'Delete My Account Permanently';
+          }
+        });
+      }
+      } catch (error) {
+        console.error('[DeleteAccount] Fatal error:', error);
+        document.getElementById('loadingState').innerHTML = `
+          <div class="bg-red-50 border-l-4 border-red-400 p-6 rounded-lg">
+            <div class="flex">
+              <div class="flex-shrink-0">
+                <svg class="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+              </div>
+              <div class="ml-3">
+                <h3 class="text-lg font-medium text-red-900">Error Loading Page</h3>
+                <p class="mt-2 text-sm text-red-800">
+                  Failed to initialize page. Please try refreshing or contact support at sinaptick@gmail.com
+                </p>
+                <p class="mt-2 text-xs text-red-700 font-mono">${error.message}</p>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+    </script>
+  </body>
+</html>

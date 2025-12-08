@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
-  updateProfile,
+  updateProfile
 } from "firebase/auth";
 import {
   getFirestore,
@@ -82,7 +82,7 @@ function RegisterForm({ onSwitch }) {
         email: form.email.trim().toLowerCase(),
         createdAt: serverTimestamp(),
         emailVerified: cred.user.emailVerified || false,
-        approved: false,
+        approved: true,
       });
       await sendEmailVerification(cred.user);
       setSuccess("Account created. Check your inbox to verify your email before signing in.");
@@ -92,6 +92,7 @@ function RegisterForm({ onSwitch }) {
       setLoading(false);
     }
   }
+
 
   return (
     <Card className="max-w-xl w-full">
@@ -207,7 +208,7 @@ function RegisterForm({ onSwitch }) {
           </div>
 
           <div className="sm:col-span-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mt-2">
-            <Button type="submit" disabled={loading}>{loading ? "Creating…" : "Create account"}</Button>
+            <Button type="submit" disabled={loading}>{loading ? "Creating…" : "Create Account"}</Button>
             <button type="button" onClick={onSwitch} className="text-sm text-indigo-400 hover:text-indigo-300 hover:underline">Have an account? Sign in</button>
           </div>
         </form>

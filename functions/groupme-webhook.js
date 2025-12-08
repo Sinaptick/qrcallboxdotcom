@@ -95,10 +95,10 @@ async function isAssistanceResponse(payload) {
  */
 async function logAssistanceResponse(payload) {
   const { nickname, user_id, text, group_id, created_at, favorited_by, id: message_id } = payload;
-  
+
   try {
     const db = getFirestore();
-    
+
     // Find the most recent unresponded assistance request
     // Use wider time window to handle timezone differences
     const recentLogs = await db.collection("logs")
@@ -111,16 +111,16 @@ async function logAssistanceResponse(payload) {
     if (!recentLogs.empty) {
       const logDoc = recentLogs.docs[0];
       const logData = logDoc.data();
-      
+
       // Calculate response time in seconds
       const requestTime = logData.ts.toDate ? logData.ts.toDate() : new Date(logData.ts);
       const responseTime = new Date(created_at * 1000);
       const responseTimeSeconds = Math.round((responseTime - requestTime) / 1000);
-      
+
       // Check for likes on this message
       const likeCount = favorited_by ? favorited_by.length : 0;
       const likedByUsers = favorited_by || [];
-      
+
       // Update the log with response info
       await logDoc.ref.update({
         respondedAt: FieldValue.serverTimestamp(),
@@ -146,7 +146,7 @@ async function logAssistanceResponse(payload) {
         store: logData.store,
         area: logData.area
       });
-      
+
       // If the message was liked, log additional details
       if (likeCount > 0) {
         logger.info("Response message was liked", {
@@ -155,6 +155,50 @@ async function logAssistanceResponse(payload) {
           likeCount: likeCount,
           likedByUsers: likedByUsers
         });
+      }
+
+      // Also update the scans collection for Android app integration
+      try {
+        const recentScans = await db.collection("scans")
+          .where("storeNumber", "==", String(logData.store))
+          .where("timestamp", ">=", new Date(created_at * 1000 - 6 * 60 * 60 * 1000))
+          .where("status", "==", "pending")
+          .orderBy("timestamp", "desc")
+          .limit(1)
+          .get();
+
+        if (!recentScans.empty) {
+          const scanDoc = recentScans.docs[0];
+
+          // Update scan with response info
+          await scanDoc.ref.update({
+            status: "claimed",
+            claimedBy: user_id,
+            claimedByName: nickname,
+            claimedAt: FieldValue.serverTimestamp(),
+            responses: FieldValue.arrayUnion({
+              respondedAt: responseTime,
+              responderName: nickname,
+              responderUserId: user_id,
+              responseText: text,
+              responseSource: "groupme"
+            })
+          });
+
+          logger.info("Updated scan record with GroupMe response", {
+            scanId: scanDoc.id,
+            responder: nickname,
+            store: logData.store
+          });
+        } else {
+          logger.warn("No matching scan found for GroupMe response", {
+            store: logData.store,
+            logTimestamp: requestTime
+          });
+        }
+      } catch (scanError) {
+        logger.error("Error updating scan record:", scanError);
+        // Don't fail the entire function if scan update fails
       }
     }
   } catch (e) {

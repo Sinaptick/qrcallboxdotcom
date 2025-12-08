@@ -9,8 +9,10 @@ import Button from "../../Button.jsx";
 const UserManagement = React.memo(function UserManagement() {
   const { auth } = useFirebase();
   const user = auth?.currentUser;
-  
+
   const [storeNumber, setStoreNumber] = useState("");
+  const [emailSearch, setEmailSearch] = useState("");
+  const [nameSearch, setNameSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [debugInfo, setDebugInfo] = useState([]);
@@ -18,6 +20,10 @@ const UserManagement = React.memo(function UserManagement() {
   const [selectedUser, setSelectedUser] = useState(null);
   const [editingUser, setEditingUser] = useState(null);
   const [userEdits, setUserEdits] = useState({});
+  const [blankStoreUsers, setBlankStoreUsers] = useState([]);
+  const [loadingBlankUsers, setLoadingBlankUsers] = useState(false);
+  const [passwordResetLink, setPasswordResetLink] = useState("");
+  const [sendingPasswordReset, setSendingPasswordReset] = useState(false);
 
   // Debug logging function
   const addDebug = useCallback((message) => {
@@ -87,13 +93,164 @@ const UserManagement = React.memo(function UserManagement() {
     }
   }, [storeNumber, user, addDebug, handleError]);
 
+  // Look up users by email
+  const lookupEmail = useCallback(async () => {
+    if (!emailSearch.trim()) {
+      handleError("Please enter an email address");
+      return;
+    }
+
+    if (emailSearch.trim().length < 3) {
+      handleError("Please enter at least 3 characters for email search");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      setStoreUsers([]);
+      addDebug(`Looking up user by email: ${emailSearch}`);
+
+      const token = await user.getIdToken();
+
+      const res = await fetch(`/api/groupme/admin-lookup-email`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email: emailSearch.trim()
+        })
+      });
+
+      addDebug(`Response status: ${res.status} ${res.statusText}`);
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const data = await res.json();
+
+      if (data.users && data.users.length > 0) {
+        setStoreUsers(data.users);
+        addDebug(`Found ${data.users.length} user(s) with email ${emailSearch}`);
+      } else {
+        addDebug(`No users found with email ${emailSearch}`);
+        setStoreUsers([]);
+      }
+
+    } catch (err) {
+      handleError(`Email lookup failed: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [emailSearch, user, addDebug, handleError]);
+
+  // Look up users by name
+  const lookupName = useCallback(async () => {
+    if (!nameSearch.trim()) {
+      handleError("Please enter a name");
+      return;
+    }
+
+    if (nameSearch.trim().length < 2) {
+      handleError("Please enter at least 2 characters for name search");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      setStoreUsers([]);
+      addDebug(`Looking up users by name: ${nameSearch}`);
+
+      const token = await user.getIdToken();
+
+      const res = await fetch(`/api/groupme/admin-lookup-name`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: nameSearch.trim()
+        })
+      });
+
+      addDebug(`Response status: ${res.status} ${res.statusText}`);
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const data = await res.json();
+
+      if (data.users && data.users.length > 0) {
+        setStoreUsers(data.users);
+        addDebug(`Found ${data.users.length} user(s) with name ${nameSearch}`);
+      } else {
+        addDebug(`No users found with name ${nameSearch}`);
+        setStoreUsers([]);
+      }
+
+    } catch (err) {
+      handleError(`Name lookup failed: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [nameSearch, user, addDebug, handleError]);
+
+  // Find users with blank store numbers
+  const findBlankStoreUsers = useCallback(async () => {
+    try {
+      setLoadingBlankUsers(true);
+      setError("");
+      setBlankStoreUsers([]);
+      addDebug("Searching for users with blank store numbers...");
+
+      const token = await user.getIdToken();
+
+      const res = await fetch(`/api/admin/find-blank-store-users`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      addDebug(`Response status: ${res.status} ${res.statusText}`);
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const data = await res.json();
+
+      if (data.users && data.users.length > 0) {
+        setBlankStoreUsers(data.users);
+        addDebug(`Found ${data.users.length} users with blank store numbers out of ${data.total_users} total users`);
+      } else {
+        addDebug(`No users found with blank store numbers (${data.total_users} total users checked)`);
+        setBlankStoreUsers([]);
+      }
+
+    } catch (err) {
+      handleError(`Blank store users search failed: ${err.message}`);
+    } finally {
+      setLoadingBlankUsers(false);
+    }
+  }, [user, addDebug, handleError]);
+
   // Load detailed user data including work schedule
   const loadUserDetails = useCallback(async (userId) => {
     try {
       addDebug(`Loading detailed user data for ${userId}`);
       
       const token = await user.getIdToken();
-      const res = await fetch(`/api/admin/get-user-details?user_id=${userId}`, {
+      const res = await fetch(`/api/admin/user-details?user_id=${userId}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -130,8 +287,14 @@ const UserManagement = React.memo(function UserManagement() {
         lastName: userDetails.lastName || storeUser.lastName,
         email: userDetails.email || storeUser.email,
         storeNumber: userDetails.storeNumber || storeUser.storeNumber,
+        homeStore: userDetails.homeStore || storeUser.homeStore || '',
+        allowedStores: userDetails.allowedStores || storeUser.allowedStores || [],
+        notificationAreas: userDetails.notificationAreas || [],
+        activeStore: userDetails.activeStore || userDetails.storeNumber || '',
         jobTitle: userDetails.jobTitle || storeUser.jobTitle,
+        phone: userDetails.phone || '',
         role: userDetails.role || 'user',
+        approved: userDetails.approved !== false,
         notificationsEnabled: userDetails.notificationsEnabled !== false,
         respectDoNotDisturb: userDetails.respectDoNotDisturb !== false,
         workSchedule: userDetails.workSchedule || {
@@ -220,6 +383,57 @@ const UserManagement = React.memo(function UserManagement() {
     return `${displayHour}:${minute.toString().padStart(2, '0')} ${period}`;
   };
 
+  // Send password reset email
+  const sendPasswordReset = useCallback(async (email) => {
+    if (!email) {
+      handleError("User email is required");
+      return;
+    }
+
+    try {
+      setSendingPasswordReset(true);
+      setPasswordResetLink("");
+      addDebug(`Sending password reset email to: ${email}`);
+
+      const token = await user.getIdToken();
+
+      const res = await fetch(`/api/admin/send-password-reset`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email })
+      });
+
+      addDebug(`Response status: ${res.status} ${res.statusText}`);
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errorText}`);
+      }
+
+      const data = await res.json();
+
+      // Check if email was actually sent or if SendGrid is not configured
+      if (data.resetLink) {
+        // Fallback: SendGrid not configured, show the link
+        setPasswordResetLink(data.resetLink);
+        addDebug(`SendGrid not configured - password reset link generated but not emailed`);
+      } else {
+        // Success: Email sent
+        setPasswordResetLink("EMAIL_SENT");
+        addDebug(`Password reset email sent successfully to ${email}`);
+      }
+
+    } catch (err) {
+      handleError(`Password reset failed: ${err.message}`);
+    } finally {
+      setSendingPasswordReset(false);
+    }
+  }, [user, addDebug, handleError]);
+
+
   return (
     <div className="space-y-4">
       {/* Store Lookup Section */}
@@ -228,7 +442,7 @@ const UserManagement = React.memo(function UserManagement() {
         <div className="text-sm text-secondary mb-4">
           Search for users by store number to view and edit their profiles, work schedules, and settings.
         </div>
-        
+
         <div className="flex gap-2 mb-3">
           <input
             type="number"
@@ -248,11 +462,140 @@ const UserManagement = React.memo(function UserManagement() {
         </div>
       </div>
 
-      {/* Store Users Section */}
+      {/* Email Lookup Section */}
+      <div className="bg-tertiary rounded-xl p-4 border border-themed">
+        <h4 className="text-md font-semibold mb-3 text-primary">User Management - Email Lookup</h4>
+        <div className="text-sm text-secondary mb-4">
+          Search for users by email address (partial match supported). Enter at least 3 characters.
+          For example, searching "sin" will find "sinaptick@gmail.com". Helpful for users with blank store numbers.
+        </div>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            placeholder="Enter email or partial email (min 3 chars)"
+            value={emailSearch}
+            onChange={(e) => setEmailSearch(e.target.value)}
+            className="flex-1 rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+            onKeyPress={(e) => {
+              if (e.key === 'Enter' && emailSearch.trim() && emailSearch.trim().length >= 3 && !loading) {
+                lookupEmail();
+              }
+            }}
+          />
+          <Button
+            onClick={lookupEmail}
+            disabled={loading || !emailSearch.trim() || emailSearch.trim().length < 3}
+            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2"
+          >
+            {loading ? "Looking up..." : "Search Email"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Name Lookup Section */}
+      <div className="bg-tertiary rounded-xl p-4 border border-themed">
+        <h4 className="text-md font-semibold mb-3 text-primary">User Management - Name Lookup</h4>
+        <div className="text-sm text-secondary mb-4">
+          Search for users by first name, last name, or full name (partial match supported). Enter at least 2 characters.
+          For example, searching "joh" will find "John" or "Johnson".
+        </div>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            placeholder="Enter name (min 2 chars)"
+            value={nameSearch}
+            onChange={(e) => setNameSearch(e.target.value)}
+            className="flex-1 rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+            onKeyPress={(e) => {
+              if (e.key === 'Enter' && nameSearch.trim() && nameSearch.trim().length >= 2 && !loading) {
+                lookupName();
+              }
+            }}
+          />
+          <Button
+            onClick={lookupName}
+            disabled={loading || !nameSearch.trim() || nameSearch.trim().length < 2}
+            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2"
+          >
+            {loading ? "Looking up..." : "Search Name"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Blank Store Numbers Section */}
+      <div className="bg-tertiary rounded-xl p-4 border border-themed">
+        <h4 className="text-md font-semibold mb-3 text-primary">Find Users with Blank Store Numbers</h4>
+        <div className="text-sm text-secondary mb-4">
+          Find all users who are missing a store number assignment. This often happens with Gmail sign-ups.
+          You can then edit these users to assign the correct store number.
+        </div>
+
+        <div className="flex gap-2 mb-3">
+          <Button
+            onClick={findBlankStoreUsers}
+            disabled={loadingBlankUsers}
+            className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2"
+          >
+            {loadingBlankUsers ? "Searching..." : "Find Blank Store Users"}
+          </Button>
+          {blankStoreUsers.length > 0 && (
+            <span className="text-sm text-primary self-center">
+              Found {blankStoreUsers.length} user(s) with blank store numbers
+            </span>
+          )}
+        </div>
+
+        {/* Display blank store users */}
+        {blankStoreUsers.length > 0 && !editingUser && (
+          <div className="mt-4 space-y-3">
+            <div className="text-sm font-medium text-primary mb-2">
+              Users Missing Store Numbers:
+            </div>
+            {blankStoreUsers.map((blankUser) => (
+              <div key={blankUser.id} className="border border-orange-500/50 rounded-lg p-4 bg-orange-900/10">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="font-medium text-primary">
+                      {blankUser.firstName} {blankUser.lastName}
+                    </div>
+                    <div className="text-sm text-secondary">{blankUser.email}</div>
+                    <div className="text-xs text-muted mt-1">
+                      {blankUser.jobTitle && `${blankUser.jobTitle} | `}
+                      Store: <span className="text-orange-500 font-semibold">{blankUser.storeNumber || 'BLANK'}</span> |
+                      Provider: {blankUser.provider || 'email'} |
+                      Approved: {blankUser.approved ? 'Yes' : 'No'} |
+                      ID: {blankUser.id}
+                    </div>
+                    {blankUser.allowedStores && blankUser.allowedStores.length > 0 && (
+                      <div className="text-xs text-muted">
+                        Allowed Stores: {blankUser.allowedStores.join(', ')}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-3 ml-4">
+                    <Button
+                      onClick={() => startEditingUser(blankUser)}
+                      disabled={loading}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-2"
+                    >
+                      Edit & Fix
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Search Results Section */}
       {storeUsers.length > 0 && !editingUser && (
         <div className="bg-tertiary rounded-xl p-4 border border-themed">
           <h4 className="text-md font-semibold mb-3 text-primary">
-            Store {storeNumber} Users ({storeUsers.length})
+            Search Results ({storeUsers.length} user{storeUsers.length !== 1 ? 's' : ''})
           </h4>
           
           <div className="space-y-3">
@@ -315,6 +658,13 @@ const UserManagement = React.memo(function UserManagement() {
                 {loading ? "Saving..." : "Save Changes"}
               </Button>
               <Button
+                onClick={() => sendPasswordReset(editingUser.email)}
+                disabled={sendingPasswordReset || !editingUser.email}
+                className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2"
+              >
+                {sendingPasswordReset ? "Sending..." : "Send Password Reset"}
+              </Button>
+              <Button
                 onClick={cancelEditing}
                 disabled={loading}
                 className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2"
@@ -323,7 +673,67 @@ const UserManagement = React.memo(function UserManagement() {
               </Button>
             </div>
           </div>
-          
+
+          {/* Password Reset Status Display */}
+          {passwordResetLink && (
+            <div className={`${passwordResetLink === "EMAIL_SENT" ? "bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700" : "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700"} border rounded-lg p-4 mb-4`}>
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  {passwordResetLink === "EMAIL_SENT" ? (
+                    <>
+                      <h5 className="text-sm font-semibold text-green-800 dark:text-green-200 mb-2">
+                        ✓ Password Reset Email Sent
+                      </h5>
+                      <p className="text-xs text-green-700 dark:text-green-300 mb-2">
+                        A password reset email has been sent to <strong>{editingUser?.email}</strong>.
+                      </p>
+                      <p className="text-xs text-green-700 dark:text-green-300">
+                        The user should receive the email shortly. The reset link will expire in 1 hour.
+                      </p>
+                      <div className="mt-3">
+                        <Button
+                          onClick={() => setPasswordResetLink("")}
+                          className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 text-xs"
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h5 className="text-sm font-semibold text-yellow-800 dark:text-yellow-200 mb-2">
+                        Password Reset Link Generated (Email Not Sent)
+                      </h5>
+                      <p className="text-xs text-yellow-700 dark:text-yellow-300 mb-3">
+                        SendGrid is not configured. Share this link manually. It will expire in 1 hour.
+                      </p>
+                      <div className="bg-white dark:bg-gray-800 rounded border border-yellow-300 dark:border-yellow-700 p-2 mb-2">
+                        <code className="text-xs text-primary break-all">{passwordResetLink}</code>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => {
+                            navigator.clipboard.writeText(passwordResetLink);
+                            addDebug('Password reset link copied to clipboard');
+                          }}
+                          className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 text-xs"
+                        >
+                          Copy Link
+                        </Button>
+                        <Button
+                          onClick={() => setPasswordResetLink("")}
+                          className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 text-xs"
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-6">
             {/* Basic Information */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -365,7 +775,7 @@ const UserManagement = React.memo(function UserManagement() {
               
               <div>
                 <label className="block text-sm font-medium text-primary mb-2">
-                  Store Number:
+                  Store Number (Primary):
                 </label>
                 <input
                   type="number"
@@ -373,8 +783,27 @@ const UserManagement = React.memo(function UserManagement() {
                   onChange={(e) => setUserEdits(prev => ({ ...prev, storeNumber: e.target.value }))}
                   className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
                 />
+                <div className="text-xs text-muted mt-1">
+                  Default/primary store assignment
+                </div>
               </div>
-              
+
+              <div>
+                <label className="block text-sm font-medium text-primary mb-2">
+                  Active Store (Monitoring):
+                </label>
+                <input
+                  type="number"
+                  value={userEdits.activeStore || ''}
+                  onChange={(e) => setUserEdits(prev => ({ ...prev, activeStore: e.target.value }))}
+                  className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                  placeholder="Leave blank to use storeNumber"
+                />
+                <div className="text-xs text-muted mt-1">
+                  Android app: Store currently monitoring (for multi-store users)
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-primary mb-2">
                   Job Title:
@@ -389,6 +818,32 @@ const UserManagement = React.memo(function UserManagement() {
               
               <div>
                 <label className="block text-sm font-medium text-primary mb-2">
+                  Phone:
+                </label>
+                <input
+                  type="tel"
+                  value={userEdits.phone || ''}
+                  onChange={(e) => setUserEdits(prev => ({ ...prev, phone: e.target.value }))}
+                  className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                  placeholder="Phone number"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-primary mb-2">
+                  Home Store (Legacy):
+                </label>
+                <input
+                  type="number"
+                  value={userEdits.homeStore || ''}
+                  onChange={(e) => setUserEdits(prev => ({ ...prev, homeStore: e.target.value }))}
+                  className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                  placeholder="Home store number"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-primary mb-2">
                   Role:
                 </label>
                 <select
@@ -400,6 +855,60 @@ const UserManagement = React.memo(function UserManagement() {
                   <option value="admin">Admin</option>
                   <option value="manager">Manager</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-primary mb-2">
+                  Approved:
+                </label>
+                <select
+                  value={userEdits.approved ? 'true' : 'false'}
+                  onChange={(e) => setUserEdits(prev => ({ ...prev, approved: e.target.value === 'true' }))}
+                  className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                >
+                  <option value="true">Yes - User can access system</option>
+                  <option value="false">No - User awaiting approval</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Allowed Stores */}
+            <div>
+              <label className="block text-sm font-medium text-primary mb-2">
+                Allowed Stores (comma-separated):
+              </label>
+              <input
+                type="text"
+                value={Array.isArray(userEdits.allowedStores) ? userEdits.allowedStores.join(', ') : ''}
+                onChange={(e) => {
+                  const storesArray = e.target.value.split(',').map(s => s.trim()).filter(s => s);
+                  setUserEdits(prev => ({ ...prev, allowedStores: storesArray }));
+                }}
+                className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                placeholder="e.g., 1234, 5678, 9012"
+              />
+              <div className="text-xs text-muted mt-1">
+                Enter store numbers separated by commas. User will have access to all listed stores.
+              </div>
+            </div>
+
+            {/* Notification Areas */}
+            <div>
+              <label className="block text-sm font-medium text-primary mb-2">
+                Notification Areas (iOS only, comma-separated):
+              </label>
+              <input
+                type="text"
+                value={Array.isArray(userEdits.notificationAreas) ? userEdits.notificationAreas.join(', ') : ''}
+                onChange={(e) => {
+                  const areasArray = e.target.value.split(',').map(s => s.trim()).filter(s => s);
+                  setUserEdits(prev => ({ ...prev, notificationAreas: areasArray }));
+                }}
+                className="w-full rounded border border-themed bg-primary text-primary px-3 py-2 text-sm"
+                placeholder="e.g., Electronics, Appliances, Garden"
+              />
+              <div className="text-xs text-muted mt-1">
+                Areas user wants notifications for (iOS app only). Leave empty to receive notifications for all areas.
               </div>
             </div>
 

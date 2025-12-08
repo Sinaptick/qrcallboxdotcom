@@ -8,6 +8,8 @@ import GroupMeSetup from "../../GroupMeSetup.jsx";
 import MyTickets from "../../MyTickets.jsx";
 import Setup from "../../Setup.jsx";
 import AdminPanel from "../admin/AdminPanel.jsx";
+import Analytics from "../analytics/Analytics.jsx";
+import ActiveAssociates from "../ActiveAssociates.jsx";
 
 /**
  * TabContent Component
@@ -52,7 +54,7 @@ const TabContent = React.memo(function TabContent({
         <Card>
           <CardHeader title="Top Responders" subtitle="Leaderboard of fastest and most active associates" />
           <CardBody>
-            <TopResponders db={db} />
+            <TopResponders db={db} userDoc={userDoc} />
           </CardBody>
         </Card>
       </>
@@ -144,6 +146,30 @@ const TabContent = React.memo(function TabContent({
               {/* <WorkvivoSetup /> */}
             </div>
           )}
+        </CardBody>
+      </Card>
+    );
+  }
+
+  // Analytics Tab
+  if (active === "Analytics" && isAdmin) {
+    return (
+      <Card>
+        <CardHeader title="Analytics" subtitle="Response performance and user engagement metrics" />
+        <CardBody>
+          <Analytics />
+        </CardBody>
+      </Card>
+    );
+  }
+
+  // Active Associates Tab
+  if (active === "Active Associates" && isAdmin) {
+    return (
+      <Card>
+        <CardHeader title="Active Associates" subtitle="Users currently on shift with recent activity" />
+        <CardBody>
+          <ActiveAssociates />
         </CardBody>
       </Card>
     );

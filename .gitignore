@@ -8,3 +8,41 @@ dist/
 .env.production.local
 serviceAccountKey.json
 *.csv
+
+# Security: Backup files and temporary files
+*.bak
+*.tmp
+*.temp
+
+# Security: Android keystores and sensitive files
+android/app/*.keystore
+android/app/keystore.properties
+android/**/*.keystore
+
+# Build artifacts that may contain sensitive info
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+
+# Android release files (should not be in repo)
+*.aab
+*.apk
+!dist/app/*.apk
+
+# Test and debug files
+*test*.cjs
+*debug*.cjs
+check_user_role.js
+set_admin_role.cjs
+
+# Google Play Store assets (store in docs/ instead)
+play-store-*.png
+play-store-*.md
+feature-graphic*.svg
+google-play-console-*.md
+
+# MCP Server and Python environments
+android-mcp-server/
+**/.venv/
+**/__pycache__/
