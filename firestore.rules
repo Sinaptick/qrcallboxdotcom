@@ -114,6 +114,12 @@ service cloud.firestore {
       allow write: if false; // Only admin via functions
     }
 
+    // QR Locations collection - predefined departments/areas for QR codes
+    match /qr_locations/{locationId} {
+      // Admin can read/write locations
+      allow read, write: if isAdmin();
+    }
+
     // Tasks collection - for APTasks calendar
     match /tasks/{taskId} {
       allow read: if request.auth != null;
