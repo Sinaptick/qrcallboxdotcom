@@ -1747,7 +1747,7 @@ function Shell({ user, onSignOut }) {
         )}
 
         {active === "Admin" && isAdmin && (
-          <AdminPanel />
+          <AdminPanel currentAdminView={currentAdminView} setCurrentAdminView={setCurrentAdminView} db={db} />
         )}
       </main>
       
