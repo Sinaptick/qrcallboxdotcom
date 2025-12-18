@@ -732,7 +732,7 @@ function Settings({ user }) {
   );
 }
 
-function Dashboard() {
+const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
   const { db } = useFirebase();
   const [stats, setStats] = useState({
     uniqueAreas: 0,
@@ -742,31 +742,48 @@ function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Don't run if we're waiting for userDoc to load (unless admin)
+    if (!isAdmin && !userDoc) {
+      return;
+    }
+    
     let mounted = true;
     
     async function fetchDashboardStats() {
       try {
-        const { getDocs, collection, query, where, Timestamp } = await import("firebase/firestore");
+        const { getDocs, collection } = await import("firebase/firestore");
         
         // Get start and end of today (local time)
         const today = new Date();
         const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
         
-        console.log('Dashboard: Today range:', startOfDay.toISOString(), 'to', endOfDay.toISOString());
-        
         // Query scans collection for today's data
         const scansSnap = await getDocs(collection(db, "scans"));
         const allScans = scansSnap.docs.map(doc => doc.data());
         
         // Filter to today's scans
-        const todayLogs = allScans.filter(scan => {
+        let todayLogs = allScans.filter(scan => {
           if (!scan.timestamp) return false;
           const scanTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
           return scanTime >= startOfDay && scanTime < endOfDay;
         });
         
-        console.log('Dashboard: Found', todayLogs.length, 'scans for today');
+        // Filter logs by user's accessible stores (unless admin)
+        if (!isAdmin && userDoc) {
+          const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
+          // Normalize stores for comparison (handle leading zeros)
+          const normalizedAccessible = accessibleStores.map(store => {
+            const storeStr = String(store);
+            return storeStr.replace(/^0+/, '') || '0';
+          });
+          
+          todayLogs = todayLogs.filter(scan => {
+            if (!scan.storeNumber) return false;
+            const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
+            return normalizedAccessible.includes(normalizedScanStore);
+          });
+        }
         
         if (!mounted) return;
         
@@ -816,7 +833,7 @@ function Dashboard() {
 
     fetchDashboardStats();
     return () => { mounted = false; };
-  }, [db]);
+  }, [db, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
 
   return (
     <div className="grid md:grid-cols-3 gap-4">
@@ -843,10 +860,10 @@ function Dashboard() {
       </div>
     </div>
   );
-}
+});
 
 // Top Responders component
-function TopResponders({ db }) {
+const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin }) {
   const [responders, setResponders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [timePeriod, setTimePeriod] = useState('weekly');
@@ -887,8 +904,24 @@ function TopResponders({ db }) {
         console.log('TopResponders: Found', scans.length, 'total scans');
         console.log('TopResponders: Time period:', timePeriod, 'Start date:', startDate);
         
+        // Filter by user's accessible stores first (unless admin)
+        let accessibleScans = scans;
+        if (!isAdmin && userDoc) {
+          const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
+          const normalizedAccessible = accessibleStores.map(store => {
+            const storeStr = String(store);
+            return storeStr.replace(/^0+/, '') || '0';
+          });
+          
+          accessibleScans = scans.filter(scan => {
+            if (!scan.storeNumber) return false;
+            const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
+            return normalizedAccessible.includes(normalizedScanStore);
+          });
+        }
+        
         // Filter to claimed scans within time period and business hours
-        const filteredScans = scans.filter(scan => {
+        const filteredScans = accessibleScans.filter(scan => {
           // Must have claimedByName
           if (!scan.claimedByName) return false;
           
@@ -974,7 +1007,7 @@ function TopResponders({ db }) {
       }
     })();
     return () => { mounted = false; };
-  }, [db, timePeriod]);
+  }, [db, timePeriod, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
 
   const getRankEmoji = (index) => {
     const emojis = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
@@ -1040,7 +1073,7 @@ function TopResponders({ db }) {
       )}
     </div>
   );
-}
+});
 
 // Admin pending changes management
 function PendingChangesList({ db }) {
@@ -1525,13 +1558,13 @@ function Shell({ user, onSignOut }) {
                 subtitle="Overview of live assistance activity" 
               />
               <CardBody>
-                <Dashboard />
+                <Dashboard userDoc={userDoc} isAdmin={isAdmin} />
               </CardBody>
             </Card>
             <Card>
               <CardHeader title="Top Responders" subtitle="Leaderboard of fastest and most active associates" />
               <CardBody>
-                <TopResponders db={db} />
+                <TopResponders db={db} userDoc={userDoc} isAdmin={isAdmin} />
               </CardBody>
             </Card>
           </>
