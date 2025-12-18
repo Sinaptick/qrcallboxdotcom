@@ -46,3 +46,8 @@ google-play-console-*.md
 android-mcp-server/
 **/.venv/
 **/__pycache__/
+
+# Firebase configuration files (contain API keys)
+android/app/google-services.json
+**/google-services.json
+**/GoogleService-Info.plist

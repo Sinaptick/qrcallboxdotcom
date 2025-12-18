@@ -51,3 +51,5 @@ AuthKey_*.p8
 
 # Firebase configuration with API keys
 lib/firebase_options.dart
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
