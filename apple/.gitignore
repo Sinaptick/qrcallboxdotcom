@@ -48,3 +48,6 @@ app.*.map.json
 APNS_KEY_INFO.txt
 AuthKey_*.p8
 *.p8
+
+# Firebase configuration with API keys
+lib/firebase_options.dart
