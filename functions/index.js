@@ -48,6 +48,37 @@ const ALLOWED_ORIGINS = [
   "http://localhost:4173"  // for preview
 ];
 
+// Location map cache - fetches from Firestore qr_locations collection
+let locationMapCache = null;
+let locationMapLastFetch = 0;
+const LOCATION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getLocationMap() {
+  const now = Date.now();
+  if (locationMapCache && (now - locationMapLastFetch) < LOCATION_CACHE_TTL) {
+    return locationMapCache;
+  }
+  
+  try {
+    const snapshot = await db.collection("qr_locations").get();
+    const map = {};
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.active !== false) {
+        map[doc.id] = data.name;
+      }
+    });
+    locationMapCache = map;
+    locationMapLastFetch = now;
+    logger.info("Refreshed location map cache", { count: Object.keys(map).length });
+    return map;
+  } catch (error) {
+    logger.error("Failed to fetch location map", { error: error.message });
+    // Return cached version if available, otherwise empty
+    return locationMapCache || {};
+  }
+}
+
 // Security helpers
 function requiredQuery(req, key) {
   const v = req.query[key];
@@ -2114,18 +2145,65 @@ export const s = onRequest({
       return res.status(429).send("Too many requests. Please try again later.");
     }
 
-    const token = sanitizeInput(req.query.t || '', 50);
-    if (!token) {
-      return res.status(400).send("Missing or invalid token");
-    }
+    // Handle both old token format (?t=TOKEN) and new location data format (?d=BASE64_DATA)
+    let tokenData = null;
+    let token = null;
+    let isNewFormat = false;
+    
+    const encodedData = req.query.d;
+    if (encodedData) {
+      // New format: base64 encoded "store:locationId:marker"
+      try {
+        const decoded = Buffer.from(encodedData, 'base64').toString('utf-8');
+        const parts = decoded.split(':');
+        
+        if (parts.length < 2) {
+          return res.status(400).send("Invalid QR code data format");
+        }
+        
+        const [store, locationId, marker] = parts;
+        
+        // Validate location against Firestore list
+        const locationMap = await getLocationMap();
+        if (!locationMap[locationId]) {
+          logger.warn("Invalid location ID in QR scan", { locationId, decoded });
+          return res.status(400).send("Invalid location");
+        }
+        
+        // Build area description: "Department" or "Department A1-2"
+        const locationName = locationMap[locationId];
+        const areaDescription = marker ? `${locationName} ${marker}` : locationName;
+        
+        // Create tokenData from decoded info (new format doesn't use qr_tokens collection)
+        tokenData = {
+          store: store,
+          area: areaDescription,
+          locationId: locationId,
+          marker: marker || null
+        };
+        token = `loc_${store}_${locationId}_${marker || 'none'}_${Date.now()}`;
+        isNewFormat = true;
+        
+        logger.info("New format QR scan", { store, locationId, marker, areaDescription });
+      } catch (err) {
+        logger.error("Failed to decode QR data", { error: err.message, encodedData });
+        return res.status(400).send("Invalid QR code");
+      }
+    } else {
+      // Old format: token lookup
+      token = sanitizeInput(req.query.t || '', 50);
+      if (!token) {
+        return res.status(400).send("Missing or invalid token");
+      }
 
-    // Get token info
-    const tokenDoc = await db.collection("qr_tokens").doc(token).get();
-    if (!tokenDoc.exists) {
-      return res.status(404).send("Invalid or expired QR code");
-    }
+      // Get token info from qr_tokens collection
+      const tokenDoc = await db.collection("qr_tokens").doc(token).get();
+      if (!tokenDoc.exists) {
+        return res.status(404).send("Invalid or expired QR code");
+      }
 
-    const tokenData = tokenDoc.data();
+      tokenData = tokenDoc.data();
+    }
     
     // Check for duplicate scan within last 60 seconds using token's lastScannedAt
     if (tokenData.lastScannedAt) {
@@ -2183,12 +2261,14 @@ export const s = onRequest({
       }
     }
     
-    // Update scan count
-    await db.collection("qr_tokens").doc(token).update({
-      scanned: true,
-      scanCount: FieldValue.increment(1),
-      lastScannedAt: FieldValue.serverTimestamp()
-    });
+    // Update scan count (only for old token format)
+    if (!isNewFormat) {
+      await db.collection("qr_tokens").doc(token).update({
+        scanned: true,
+        scanCount: FieldValue.increment(1),
+        lastScannedAt: FieldValue.serverTimestamp()
+      });
+    }
 
     // Log the assistance request in logs collection (for admin/analytics)
     await db.collection("logs").add({
@@ -2213,6 +2293,9 @@ export const s = onRequest({
       qrCode: token,
       storeNumber: String(tokenData.store), // Ensure it's always a string
       areaDescription: tokenData.area,
+      // New location fields for reporting/insights (null for old format QRs)
+      locationId: tokenData.locationId || null,      // e.g., "electronics", "beauty"
+      locationMarker: tokenData.marker || null,      // e.g., "A1-2"
       ipAddress: req.ip || req.socket.remoteAddress,
       userAgent: req.get('User-Agent') || '',
       responses: [],

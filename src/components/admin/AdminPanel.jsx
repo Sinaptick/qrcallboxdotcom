@@ -6,6 +6,7 @@ import BlockedIPsManager from "../../BlockedIPsManager.jsx";
 import GroupMeAdminPanel from "./GroupMeAdminPanel.jsx";
 import UserManagement from "./UserManagement.jsx";
 import QRLocations from "./QRLocations.jsx";
+import DepartmentManager from "./DepartmentManager.jsx";
 import { auth } from "../../config/firebase.config.js";
 
 /**
@@ -88,7 +89,7 @@ const AdminPanel = React.memo(function AdminPanel({
       {/* Admin Navigation */}
       <div className="mb-6">
         <div className="flex gap-2 border-b border-themed">
-          {["Overview", "Support Tickets", "User Management", "GroupMe Bots", "QR Locations", "Spam Protection", "Data Cleanup"].map((view) => (
+          {["Overview", "Support Tickets", "User Management", "GroupMe Bots", "Area Management", "Departments", "Spam Protection", "Data Cleanup"].map((view) => (
             <button
               key={view}
               onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
@@ -135,8 +136,12 @@ const AdminPanel = React.memo(function AdminPanel({
         </div>
       )}
 
-      {currentAdminView === "qr_locations" && (
+      {currentAdminView === "area_management" && (
         <QRLocations />
+      )}
+
+      {currentAdminView === "departments" && (
+        <DepartmentManager />
       )}
 
       {currentAdminView === "spam_protection" && (

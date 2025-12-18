@@ -147,8 +147,8 @@ const QRLocations = React.memo(function QRLocations() {
     }
 
     // Double confirm for safety
-    const doubleConfirm = prompt(`Type "DELETE ${area.name}" to confirm deletion:`);
-    if (doubleConfirm !== `DELETE ${area.name}`) {
+    const doubleConfirm = prompt(`Type "Delete" to confirm:`);
+    if (doubleConfirm !== 'Delete') {
       setMessage({ type: "info", text: "Deletion cancelled - confirmation text did not match." });
       return;
     }

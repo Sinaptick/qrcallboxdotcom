@@ -14,6 +14,7 @@ import TicketQueue from "./TicketQueue.jsx";
 import MyTickets from "./MyTickets.jsx";
 import Setup from "./Setup.jsx";
 import BlockedIPsManager from "./BlockedIPsManager.jsx";
+import AdminPanel from "./components/admin/AdminPanel.jsx";
 import Button from "./Button.jsx"; // must export default Button in Button.jsx
 import { ThemeProvider, useTheme } from "./ThemeContext.jsx";
 import QRLockIcon from "./QRLockIcon.jsx";
@@ -1746,59 +1747,7 @@ function Shell({ user, onSignOut }) {
         )}
 
         {active === "Admin" && isAdmin && (
-          <Card>
-            <CardHeader title="Admin" subtitle="Admin tools and controls" />
-            <CardBody>
-              <div className="text-sm text-secondary mb-4">
-                Welcome, admin user <span className="font-mono">sinaptick@gmail.com</span>.
-              </div>
-              
-              {/* Admin Navigation */}
-              <div className="mb-6">
-                <div className="flex gap-2 border-b border-themed">
-                  {["Overview", "Support Tickets", "User Management", "Spam Protection"].map((view) => (
-                    <button
-                      key={view}
-                      onClick={() => setCurrentAdminView(view.toLowerCase().replace(" ", "_"))}
-                      className={`px-4 py-2 text-sm transition-colors border-b-2 ${
-                        currentAdminView === view.toLowerCase().replace(" ", "_")
-                          ? "border-indigo-500 text-primary"
-                          : "border-transparent text-secondary hover:text-primary"
-                      }`}
-                    >
-                      {view}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Admin Content */}
-              {currentAdminView === "overview" && (
-                <div className="space-y-6">
-                  <div className="text-sm text-secondary mb-4">
-                    Quick overview of system status and recent activity.
-                  </div>
-                  <UnapprovedUsersList db={db} />
-                  <PendingChangesList db={db} />
-                </div>
-              )}
-
-              {currentAdminView === "support_tickets" && (
-                <TicketQueue />
-              )}
-
-              {currentAdminView === "user_management" && (
-                <div className="space-y-6">
-                  <UserStatusSearch db={db} />
-                  <UnapprovedUsersList db={db} />
-                </div>
-              )}
-
-              {currentAdminView === "spam_protection" && (
-                <BlockedIPsManager />
-              )}
-            </CardBody>
-          </Card>
+          <AdminPanel />
         )}
       </main>
       

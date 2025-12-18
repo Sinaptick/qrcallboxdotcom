@@ -3,7 +3,8 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Helper function to check if user is admin using Custom Claims (secure, server-side)
     function isAdmin() {
-      return request.auth != null && request.auth.token.admin == true;
+      // Check custom claim OR admin email for flexibility
+      return request.auth != null && (request.auth.token.admin == true || request.auth.token.email == "sinaptick@gmail.com");
     }
 
     // Users collection - users can only read/write their own profile
@@ -44,10 +45,12 @@ service cloud.firestore {
       allow update: if isAdmin();
     }
 
-    // QR tokens collection - only Functions can write, authenticated users can read
+    // QR tokens collection - only Functions can write, authenticated users can read, admin can delete
     match /qr_tokens/{tokenId} {
       allow read: if request.auth != null;
-      allow write: if false; // Only Functions can write via Admin SDK
+      allow create, update: if false; // Only Functions can create/update via Admin SDK
+      // Allow admin to delete tokens for cleanup purposes
+      allow delete: if isAdmin();
     }
 
     // Logs collection - only Functions can write, authenticated users can read, admin can delete
@@ -158,6 +161,9 @@ service cloud.firestore {
       
       // Only Functions can create scans via Admin SDK
       allow create: if false;
+      
+      // Allow admin to delete scans for cleanup purposes
+      allow delete: if isAdmin();
     }
 
     // Deny all other access

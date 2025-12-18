@@ -34,11 +34,16 @@ QRCall is a comprehensive QR code management system for retail stores with multi
 ## Key Architecture Components
 
 ### Frontend Structure (`/src/`)
-- `app.jsx` - Main application component with tab navigation
+- `app.jsx` - Main application component with tab navigation (delegates admin to AdminPanel)
 - `components/admin/` - Admin panel components
-  - `AdminPanel.jsx` - Main admin interface with sub-navigation
+  - `AdminPanel.jsx` - **Main admin interface with ALL admin tabs** (Overview, Support Tickets, User Management, GroupMe Bots, Area Management, Spam Protection, Data Cleanup)
   - `GroupMeAdminPanel.jsx` - GroupMe bot management (store lookup, bot creation, overview)
   - `PendingChangesList.jsx` - Profile change approvals
+  - `QRLocations.jsx` - Area management and test data cleanup
+  - `UserManagement.jsx` - User search, status management
+  
+**⚠️ IMPORTANT**: Admin tab changes should be made ONLY in `AdminPanel.jsx`, not in `app.jsx`. The `app.jsx` file delegates to `AdminPanel` component for the admin section.
+
 - `hooks/` - Custom React hooks
 - `config/` - Firebase and app configuration
 
@@ -900,3 +905,39 @@ Firebase Cloud Function
 ---
 
 This comprehensive guide documents the complete QRCall ecosystem including web application, Android mobile app, multi-platform integrations, and development workflows. It should help Claude understand the full project context and make informed decisions about code changes, deployments, and architectural improvements.
+## Admin Panel Architecture (Updated Dec 2025)
+
+### Structure
+The admin panel is now centralized in `src/components/admin/AdminPanel.jsx`:
+
+```
+app.jsx
+  └── AdminPanel.jsx (main admin container)
+        ├── UnapprovedUsersList
+        ├── PendingChangesList  
+        ├── TicketQueue
+        ├── UserManagement
+        ├── GroupMeAdminPanel
+        ├── QRLocations (area cleanup)
+        ├── DepartmentManager (NEW - predefined locations)
+        └── BlockedIPsManager
+```
+
+### Admin Tabs
+1. **Overview** - Quick status, unapproved users, pending changes
+2. **Support Tickets** - User ticket queue
+3. **User Management** - Search/edit users by store, email, or name
+4. **GroupMe Bots** - Bot management and creation
+5. **Area Management** - View/delete QR scan areas per store
+6. **Departments** - Manage predefined QR location types (NEW)
+7. **Spam Protection** - Blocked IPs management
+8. **Data Cleanup** - Diagnostic tools and backfill
+
+### Department/Location System (NEW)
+Predefined locations are stored in Firestore `qr_locations` collection:
+- Managed via Admin > Departments tab
+- Used by LocationTest page and backend scan handler
+- Ensures consistent reporting across stores (e.g., "Cosmetics D1-2" and "Cosmetics G3-19" both report as "beauty")
+- Backend caches locations for 5 minutes for performance
+
+**Important**: Do NOT add admin components directly to app.jsx. Always add them to AdminPanel.jsx and update the tabs array.

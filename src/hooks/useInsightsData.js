@@ -100,28 +100,34 @@ export function useInsightsData(active, db, user = null) {
             } else if (user?.storeNumber) {
               defaultStore = String(user.storeNumber);
             }
+            
+            console.log('Insights: User home store:', user?.homeStore, 'Store number:', user?.storeNumber, 'Default:', defaultStore);
+            console.log('Insights: Available stores:', storeOptions);
 
             // Check if default store exists in available options
             if (defaultStore && storeOptions.includes(defaultStore)) {
               defaultStores = [defaultStore];
+              console.log('Insights: Setting default store to:', defaultStore);
               return [defaultStore];
             }
 
             // Fallback to empty selection
+            console.log('Insights: No matching default store found');
             return [];
           });
 
           // Default to current week (most recent week)
           setSelectedWeek(prev => {
             if (prev.length > 0) return prev; // Don't override existing selection
+            console.log('Insights: Setting default week to:', weekOptions[0]);
             return weekOptions.length > 0 ? [weekOptions[0]] : [];
           });
 
-          // Default to areas filtered by selected store(s)
+          // Default to ALL areas for the selected store(s)
           setSelectedAreas(prev => {
             if (prev.length > 0) return prev; // Don't override existing selection
 
-            // Filter areas based on the default selected stores
+            // Select all areas that exist for the default store(s)
             if (defaultStores.length > 0) {
               const relevantLogs = logsArr.filter(log => {
                 if (!log.store) return false;
@@ -132,10 +138,13 @@ export function useInsightsData(active, db, user = null) {
                 return normalizedSelectedStores.includes(normalizedLogStore);
               });
               const relevantAreas = new Set(relevantLogs.map(log => log.area).filter(Boolean));
-              return areaOptions.filter(area => relevantAreas.has(area));
+              const storeAreas = areaOptions.filter(area => relevantAreas.has(area));
+              console.log('Insights: Defaulting to all areas for store:', defaultStores, 'Areas:', storeAreas);
+              return storeAreas; // Select ALL areas for the store
             }
 
-            // If no store selected, show all areas
+            // If no store selected, select all areas
+            console.log('Insights: No default store, selecting all areas:', areaOptions);
             return areaOptions;
           });
         }

@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
-import { getFirestore, collection, getDocs } from "firebase/firestore";
+import React, { useMemo, useState, useRef, useCallback } from "react";
+// Firestore imports removed - logs now come from parent props
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 
@@ -25,14 +25,14 @@ const hourLabelForInsights = (h) => {
  * - selectedAreas: string[]
  */
 export default function Heatmap({
-  // db,  // <-- intentionally NOT used; we fetch our own Firestore instance to avoid mismatch
+  logs = [],  // Now accepts pre-fetched logs from parent
   selectedStores = [],
   selectedWeek = [],
   weeks = [],
   selectedAreas = [],
 }) {
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // logs now come from props - no internal state needed
+  const loading = false; // Parent handles loading state
   const [exporting, setExporting] = useState(false);
   const heatmapRef = useRef(null);
 
@@ -69,28 +69,6 @@ export default function Heatmap({
     const we = new Date(ws.getTime() + 6 * 24 * 60 * 60 * 1000);
     return `Week ${weekNum} (${ws.toLocaleDateString("en-US", { month: "short", day: "numeric" })}–${we.toLocaleDateString("en-US", { month: "short", day: "numeric" })})`;
   }
-
-  // fetch logs once; use our own Firestore instance to avoid “Expected first argument…” errors
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      try {
-        const dbLocal = getFirestore(); // default app’s Firestore
-        const snap = await getDocs(collection(dbLocal, "logs"));
-        const arr = snap.docs.map((d) => d.data());
-        if (mounted) setLogs(arr);
-      } catch (err) {
-        console.error("[Heatmap] Firestore fetch error:", err);
-        if (mounted) setLogs([]);
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
 
   // helper normalizers to avoid case/space mismatches
   const normStore = (v) => String(v ?? "").trim();
@@ -185,21 +163,40 @@ export default function Heatmap({
   const maxColumnTotal = useMemo(() => Math.max(1, ...columnTotals), [columnTotals]);
   const grandTotal = useMemo(() => rowTotals.reduce((sum, total) => sum + total, 0), [rowTotals]);
 
+  // Rank-based coloring for row totals - each row compared to other rows
+  const rowTotalsSorted = useMemo(() => {
+    return [...rowTotals].filter(t => t > 0).sort((a, b) => a - b);
+  }, [rowTotals]);
+  
   const rowTotalBg = useCallback((total) => {
-    const alpha = total === 0 ? 0.1 : Math.max(0.2, Math.min(1, total / maxRowTotal));
-    return `rgba(59,130,246,${alpha})`;
-  }, [maxRowTotal]);
+    if (total === 0) return `rgba(59,130,246,0.08)`;
+    // Find rank among non-zero totals (0 = lowest, 1 = highest)
+    const rank = rowTotalsSorted.indexOf(total);
+    const maxRank = rowTotalsSorted.length - 1;
+    const ratio = maxRank > 0 ? rank / maxRank : 1;
+    const alpha = 0.2 + (ratio * 0.8); // Range: 0.2 to 1.0
+    return `rgba(59,130,246,${alpha.toFixed(2)})`;
+  }, [rowTotalsSorted]);
 
+  // Rank-based coloring for column totals - each column compared to other columns
+  const columnTotalsSorted = useMemo(() => {
+    return [...columnTotals].filter(t => t > 0).sort((a, b) => a - b);
+  }, [columnTotals]);
+  
   const columnTotalBg = useCallback((total) => {
-    const alpha = total === 0 ? 0.1 : Math.max(0.2, Math.min(1, total / maxColumnTotal));
-    return `rgba(59,130,246,${alpha})`;
-  }, [maxColumnTotal]);
+    if (total === 0) return `rgba(59,130,246,0.08)`;
+    // Find rank among non-zero totals (0 = lowest, 1 = highest)
+    const rank = columnTotalsSorted.indexOf(total);
+    const maxRank = columnTotalsSorted.length - 1;
+    const ratio = maxRank > 0 ? rank / maxRank : 1;
+    const alpha = 0.2 + (ratio * 0.8); // Range: 0.2 to 1.0
+    return `rgba(59,130,246,${alpha.toFixed(2)})`;
+  }, [columnTotalsSorted]);
 
   const grandTotalBg = useCallback((total) => {
-    const maxTotal = Math.max(maxRowTotal, maxColumnTotal);
-    const alpha = total === 0 ? 0.1 : Math.max(0.3, Math.min(1, total / (maxTotal * 3))); // Scale for grand total
-    return `rgba(59,130,246,${alpha})`;
-  }, [maxRowTotal, maxColumnTotal]);
+    // Grand total always gets full intensity since it's the sum
+    return `rgba(59,130,246,1)`;
+  }, []);
 
   // format hour like "6:00 AM"
   function fmtHour(h) {
