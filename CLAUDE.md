@@ -15,6 +15,8 @@ This project has **THREE platforms** (Web, Android, Backend) that MUST use ident
 
 **Recent Bug Example (Fixed Dec 2025)**: TopResponders and Dashboard now query `scans` collection (not `logs`) using `claimedByName`, `claimedAt`, and `timestamp` fields. The `logs` collection is for activity tracking, NOT response analytics.
 
+**Dashboard Multi-Store Filtering (Dec 2025)**: Dashboard and TopResponders components use `React.memo` and accept `userDoc` and `isAdmin` props. Non-admin users see data filtered to their `allowedStores` or `storeNumber`. Admin users see all stores.
+
 ---
 
 ## Project Overview
@@ -26,7 +28,8 @@ QRCall is a comprehensive QR code management system for retail stores with multi
 - **Database**: Firebase Firestore
 - **Authentication**: Firebase Auth
 - **Hosting**: Firebase Hosting
-- **Mobile**: Native Android app (Kotlin)
+- **Mobile Android**: Native Android app (Kotlin) - v1.8.11
+- **Mobile iOS**: Flutter app (Dart) - v1.8.1+2
 - **Notifications**: Firebase Cloud Messaging (FCM)
 - **Integrations**: GroupMe API, Workvivo API
 - **Styling**: Tailwind CSS with custom theming
@@ -36,7 +39,8 @@ QRCall is a comprehensive QR code management system for retail stores with multi
 ### Frontend Structure (`/src/`)
 - `app.jsx` - Main application component with tab navigation (delegates admin to AdminPanel)
 - `components/admin/` - Admin panel components
-  - `AdminPanel.jsx` - **Main admin interface with ALL admin tabs** (Overview, Support Tickets, User Management, GroupMe Bots, Area Management, Spam Protection, Data Cleanup)
+  - `AdminPanel.jsx` - **Main admin interface with ALL admin tabs** (Overview, Support Tickets, User Management, GroupMe Bots, Area Management, Departments, Spam Protection, Data Cleanup)
+  - `DepartmentManager.jsx` - Predefined QR location/department management
   - `GroupMeAdminPanel.jsx` - GroupMe bot management (store lookup, bot creation, overview)
   - `PendingChangesList.jsx` - Profile change approvals
   - `QRLocations.jsx` - Area management and test data cleanup
@@ -78,6 +82,34 @@ QRCall is a comprehensive QR code management system for retail stores with multi
 - `README.md` - Comprehensive feature overview and technical architecture
 - `CHANGELOG.md` - Detailed version history and release notes
 - `DEV_TIME_LOG.md` - Development timeline and resource tracking
+
+### iOS/Flutter App Structure (`/apple/`)
+- **Version**: 1.8.1+2
+- **Platform**: Flutter (iOS 13.0+ / iPadOS 13.0+)
+- **Architecture**: Provider pattern with Firebase integration
+
+#### Key Directories:
+- `lib/screens/` - UI screens (home, login, settings, profile, admin)
+- `lib/services/` - Backend services (auth, firestore, fcm)
+- `lib/models/` - Data models (scan_model, user_model)
+- `lib/providers/` - State management (theme_provider)
+- `lib/widgets/` - Reusable components (scan_list_item)
+
+#### Core Features:
+- Google Sign-In, Apple Sign-In, email/password authentication
+- Real-time dashboard with Firestore snapshots
+- Assist/Ignore buttons with race condition protection
+- Dark mode support with system/manual toggle
+- Work schedule management with shift detection
+- Push notifications via FCM (physical devices only)
+
+#### Development Commands:
+```bash
+cd apple
+flutter pub get          # Get dependencies
+flutter run              # Run on simulator/device
+flutter build ios        # Build for iOS
+```
 
 ### Database Collections (Firestore)
 
@@ -190,6 +222,17 @@ QRCall is a comprehensive QR code management system for retail stores with multi
   - `reason` (string) - Block reason: 'Auto-blocked: Multiple spam attempts'
   - `expiresAt` (Firestore Timestamp) - Optional expiration time
 - **Security**: Admin read access; Functions write-only
+
+**`qr_locations` Collection**
+- **Purpose**: Predefined department/location types for QR codes
+- **Document ID**: Location ID (e.g., 'electronics', 'beauty', 'grocery')
+- **Key Fields**:
+  - `name` (string) - Display name (e.g., "Electronics", "Beauty")
+  - `order` (number) - Sort order for UI display
+  - `active` (boolean) - Whether location is available for use
+  - `createdAt` (Firestore Timestamp) - When location was created
+- **Security**: Admin read/write only
+- **Usage**: DepartmentManager admin tab; LocationTest page; backend scan handler caches for 5 minutes
 
 **`spam_logs` Collection**
 - **Purpose**: Spam detection and abuse monitoring

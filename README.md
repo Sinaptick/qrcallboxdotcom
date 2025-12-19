@@ -89,8 +89,28 @@ qrcall/
 │   ├── build.gradle                    # Project build configuration
 │   ├── gradle.properties               # Gradle configuration
 │   ├── README.md                      # Android app documentation
-│   ├── CHANGELOG.md                   # Version history (v1.7.2 latest)
+│   ├── CHANGELOG.md                   # Version history (v1.8.11 latest)
 │   └── DEV_TIME_LOG.md                # Development timeline (60+ hours)
+├── 
+├── apple/                              # 🍎 iOS/Flutter Mobile Application
+│   ├── lib/
+│   │   ├── main.dart                   # Flutter entry point
+│   │   ├── screens/                    # UI screens
+│   │   │   ├── home_screen.dart        # Main dashboard with real-time updates
+│   │   │   ├── login_screen.dart       # Auth with Google/Apple Sign-In
+│   │   │   ├── settings_screen.dart    # Work schedules & preferences
+│   │   │   ├── profile_screen.dart     # User profile display
+│   │   │   └── admin_panel_screen.dart # Admin features
+│   │   ├── services/                   # Backend services
+│   │   │   ├── auth_service.dart       # Firebase Auth integration
+│   │   │   ├── firestore_service.dart  # Firestore operations
+│   │   │   └── fcm_service.dart        # Push notifications
+│   │   ├── models/                     # Data models
+│   │   └── providers/                  # State management
+│   ├── ios/                            # iOS-specific files
+│   ├── pubspec.yaml                    # Flutter dependencies
+│   ├── README.md                       # iOS app documentation
+│   └── SECURITY_UPDATES.md             # Security audit documentation
 ├── 
 ├── dist/                               # 🚀 Built Web Application & Distribution
 │   ├── app/                            # Android APK distribution
