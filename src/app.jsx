@@ -732,7 +732,7 @@ function Settings({ user }) {
   );
 }
 
-const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
+const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin, selectedStores = [] }) {
   const { db } = useFirebase();
   const [stats, setStats] = useState({
     uniqueAreas: 0,
@@ -742,10 +742,7 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Don't run if we're waiting for userDoc to load (unless admin)
-    if (!isAdmin && !userDoc) {
-      return;
-    }
+    // Run when we have store selection
     
     let mounted = true;
     
@@ -766,19 +763,13 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
           return scanTime >= startOfDay && scanTime < endOfDay;
         });
         
-        // Filter logs by user's accessible stores (unless admin)
-        if (!isAdmin && userDoc) {
-          const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
-          // Normalize stores for comparison (handle leading zeros)
-          const normalizedAccessible = accessibleStores.map(store => {
-            const storeStr = String(store);
-            return storeStr.replace(/^0+/, '') || '0';
-          });
-          
+        // Filter by selected stores
+        if (selectedStores.length > 0) {
+          const normalizedSelected = selectedStores.map(store => String(store).replace(/^0+/, '') || '0');
           todayLogs = todayLogs.filter(scan => {
             if (!scan.storeNumber) return false;
             const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
-            return normalizedAccessible.includes(normalizedScanStore);
+            return normalizedSelected.includes(normalizedScanStore);
           });
         }
         
@@ -830,7 +821,7 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
 
     fetchDashboardStats();
     return () => { mounted = false; };
-  }, [db, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
+  }, [db, selectedStores]);
 
   return (
     <div className="grid md:grid-cols-3 gap-4">
@@ -860,7 +851,7 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
 });
 
 // Top Responders component
-const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin, timePeriod = 'weekly' }) {
+const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin, timePeriod = 'weekly', selectedStores = [] }) {
   const [responders, setResponders] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -907,19 +898,14 @@ const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin, 
         console.log('TopResponders: Found', scans.length, 'total scans');
         console.log('TopResponders: Time period:', timePeriod, 'Start date:', startDate);
         
-        // Filter by user's accessible stores first (unless admin)
+        // Filter by selected stores
         let accessibleScans = scans;
-        if (!isAdmin && userDoc) {
-          const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
-          const normalizedAccessible = accessibleStores.map(store => {
-            const storeStr = String(store);
-            return storeStr.replace(/^0+/, '') || '0';
-          });
-          
+        if (selectedStores.length > 0) {
+          const normalizedSelected = selectedStores.map(store => String(store).replace(/^0+/, '') || '0');
           accessibleScans = scans.filter(scan => {
             if (!scan.storeNumber) return false;
             const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
-            return normalizedAccessible.includes(normalizedScanStore);
+            return normalizedSelected.includes(normalizedScanStore);
           });
         }
         
@@ -1010,7 +996,7 @@ const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin, 
       }
     })();
     return () => { mounted = false; };
-  }, [db, timePeriod, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
+  }, [db, timePeriod, selectedStores]);
 
   const getRankEmoji = (index) => {
     const emojis = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
@@ -2157,12 +2143,11 @@ function filterScansByUserStores(scans, userDoc, isAdmin) {
 }
 
 // Area Scans Component - Shows all areas with scan counts
-const AreaScans = React.memo(function AreaScans({ db, userDoc, isAdmin, timePeriod, onAreaClick }) {
+const AreaScans = React.memo(function AreaScans({ db, userDoc, isAdmin, timePeriod, selectedStores = [], onAreaClick }) {
   const [areas, setAreas] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isAdmin && !userDoc) return;
     
     let mounted = true;
     
@@ -2174,8 +2159,15 @@ const AreaScans = React.memo(function AreaScans({ db, userDoc, isAdmin, timePeri
         // Use cached scan data
         let scans = await fetchScansWithCache(db);
         
-        // Filter by user's stores
-        scans = filterScansByUserStores(scans, userDoc, isAdmin);
+        // Filter by selected stores
+        if (selectedStores.length > 0) {
+          const normalizedSelected = selectedStores.map(store => String(store).replace(/^0+/, '') || '0');
+          scans = scans.filter(scan => {
+            if (!scan.storeNumber) return false;
+            const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
+            return normalizedSelected.includes(normalizedScanStore);
+          });
+        }
         
         // Filter by time period
         scans = scans.filter(scan => {
@@ -2213,7 +2205,7 @@ const AreaScans = React.memo(function AreaScans({ db, userDoc, isAdmin, timePeri
     
     fetchAreaScans();
     return () => { mounted = false; };
-  }, [db, timePeriod, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
+  }, [db, timePeriod, selectedStores]);
 
   return (
     <div className="rounded-xl border border-themed bg-tertiary p-4 h-full">
@@ -2247,7 +2239,7 @@ const AreaScans = React.memo(function AreaScans({ db, userDoc, isAdmin, timePeri
 });
 
 // Live Scan Feed Component - Polls every 25 seconds
-const LiveScanFeed = React.memo(function LiveScanFeed({ db, userDoc, isAdmin }) {
+const LiveScanFeed = React.memo(function LiveScanFeed({ db, userDoc, isAdmin, selectedStores = [] }) {
   const [scans, setScans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -2260,8 +2252,15 @@ const LiveScanFeed = React.memo(function LiveScanFeed({ db, userDoc, isAdmin }) 
       const scansSnap = await getDocs(q);
       let recentScans = scansSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       
-      // Filter by user's stores
-      recentScans = filterScansByUserStores(recentScans, userDoc, isAdmin);
+      // Filter by selected stores
+      if (selectedStores.length > 0) {
+        const normalizedSelected = selectedStores.map(store => String(store).replace(/^0+/, '') || '0');
+        recentScans = recentScans.filter(scan => {
+          if (!scan.storeNumber) return false;
+          const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
+          return normalizedSelected.includes(normalizedScanStore);
+        });
+      }
       
       // Take top 20 after filtering
       recentScans = recentScans.slice(0, 20);
@@ -2273,17 +2272,15 @@ const LiveScanFeed = React.memo(function LiveScanFeed({ db, userDoc, isAdmin }) 
       console.error("Error fetching live scans:", error);
       setLoading(false);
     }
-  }, [db, userDoc, isAdmin]);
+  }, [db, selectedStores]);
 
   useEffect(() => {
-    if (!isAdmin && !userDoc) return;
-    
     fetchScans();
     
     // Poll every 25 seconds
     const interval = setInterval(fetchScans, 25000);
     return () => clearInterval(interval);
-  }, [fetchScans, isAdmin, userDoc]);
+  }, [fetchScans]);
 
   const getTimeAgo = (timestamp) => {
     if (!timestamp) return '';
@@ -2502,38 +2499,125 @@ const AreaDetailsModal = React.memo(function AreaDetailsModal({ area, timePeriod
 const DashboardContainer = React.memo(function DashboardContainer({ userDoc, isAdmin, db }) {
   const [timePeriod, setTimePeriod] = useState('daily');
   const [selectedArea, setSelectedArea] = useState(null);
+  const [selectedStores, setSelectedStores] = useState([]);
+  const [availableStores, setAvailableStores] = useState([]);
+  const [showStoreDropdown, setShowStoreDropdown] = useState(false);
+  
+  // Initialize stores - default to user's home store
+  useEffect(() => {
+    if (!userDoc && !isAdmin) return;
+    
+    // Get available stores for this user
+    let stores = [];
+    if (isAdmin) {
+      // Admin can see all stores - we'll populate from data
+      stores = [];
+    } else if (userDoc) {
+      stores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
+    }
+    setAvailableStores(stores);
+    
+    // Default to home store
+    if (userDoc?.storeNumber && selectedStores.length === 0) {
+      setSelectedStores([String(userDoc.storeNumber)]);
+    }
+  }, [userDoc, isAdmin]);
   
   // Preload Insights data in background when Dashboard loads
   useEffect(() => {
     preloadInsightsData(db);
   }, [db]);
+  
+  // For admin, populate available stores from scan data
+  useEffect(() => {
+    if (!isAdmin) return;
+    
+    async function loadStores() {
+      const scans = await fetchScansWithCache(db);
+      const storeSet = new Set();
+      scans.forEach(s => {
+        if (s.storeNumber) storeSet.add(String(s.storeNumber));
+      });
+      const storeList = Array.from(storeSet).sort((a, b) => Number(a) - Number(b));
+      setAvailableStores(storeList);
+      if (selectedStores.length === 0 && storeList.length > 0) {
+        setSelectedStores([storeList[0]]);
+      }
+    }
+    loadStores();
+  }, [db, isAdmin]);
+
+  const toggleStore = (store) => {
+    setSelectedStores(prev => 
+      prev.includes(store) 
+        ? prev.filter(s => s !== store)
+        : [...prev, store]
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* Shared Time Period Selector */}
-      <div className="flex justify-between items-center">
+      {/* Shared Selectors Row */}
+      <div className="flex flex-wrap justify-between items-center gap-3">
         <h2 className="text-lg font-semibold text-primary">Dashboard</h2>
-        <select
-          value={timePeriod}
-          onChange={(e) => setTimePeriod(e.target.value)}
-          className="px-3 py-1.5 text-sm border border-themed bg-secondary rounded-lg text-primary"
-        >
-          {TIME_PERIODS.map(p => (
-            <option key={p.value} value={p.value}>{p.label}</option>
-          ))}
-        </select>
+        <div className="flex gap-2 items-center">
+          {/* Store Selector */}
+          <div className="relative">
+            <button
+              onClick={() => setShowStoreDropdown(!showStoreDropdown)}
+              className="px-3 py-1.5 text-sm border border-themed bg-secondary rounded-lg text-primary min-w-[120px] text-left"
+            >
+              {selectedStores.length === 0 ? 'All Stores' : 
+               selectedStores.length === 1 ? `Store ${selectedStores[0]}` : 
+               `${selectedStores.length} Stores`}
+            </button>
+            {showStoreDropdown && (
+              <div 
+                className="absolute right-0 top-full mt-1 bg-primary border border-themed rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto min-w-[150px]"
+                onMouseLeave={() => setShowStoreDropdown(false)}
+              >
+                {availableStores.length === 0 ? (
+                  <div className="p-2 text-sm text-muted">No stores available</div>
+                ) : (
+                  availableStores.map(store => (
+                    <label key={store} className="flex items-center gap-2 p-2 hover:bg-secondary cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedStores.includes(store)}
+                        onChange={() => toggleStore(store)}
+                        className="rounded"
+                      />
+                      <span className="text-sm text-primary">Store {store}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          
+          {/* Time Period Selector */}
+          <select
+            value={timePeriod}
+            onChange={(e) => setTimePeriod(e.target.value)}
+            className="px-3 py-1.5 text-sm border border-themed bg-secondary rounded-lg text-primary"
+          >
+            {TIME_PERIODS.map(p => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
       
       {/* Quick Stats */}
-      <Dashboard userDoc={userDoc} isAdmin={isAdmin} />
+      <Dashboard userDoc={userDoc} isAdmin={isAdmin} selectedStores={selectedStores} />
       
       {/* Live Feed - Full Width */}
-      <LiveScanFeed db={db} userDoc={userDoc} isAdmin={isAdmin} />
+      <LiveScanFeed db={db} userDoc={userDoc} isAdmin={isAdmin} selectedStores={selectedStores} />
       
       {/* Two Column Layout: Top Responders | Area Scans */}
       <div className="grid md:grid-cols-2 gap-4">
-        <TopResponders db={db} userDoc={userDoc} isAdmin={isAdmin} timePeriod={timePeriod} />
-        <AreaScans db={db} userDoc={userDoc} isAdmin={isAdmin} timePeriod={timePeriod} onAreaClick={setSelectedArea} />
+        <TopResponders db={db} userDoc={userDoc} isAdmin={isAdmin} timePeriod={timePeriod} selectedStores={selectedStores} />
+        <AreaScans db={db} userDoc={userDoc} isAdmin={isAdmin} timePeriod={timePeriod} selectedStores={selectedStores} onAreaClick={setSelectedArea} />
       </div>
       
       {/* Area Details Modal */}
