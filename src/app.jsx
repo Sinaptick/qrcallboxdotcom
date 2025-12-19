@@ -1,5 +1,5 @@
 // --- Imports (keep at very top) ---
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import Heatmap from "./Heatmap.jsx";
 import * as QR from "qrcode";
 import { mint } from "./lib/api.js";
@@ -751,16 +751,13 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
     
     async function fetchDashboardStats() {
       try {
-        const { getDocs, collection } = await import("firebase/firestore");
-        
         // Get start and end of today (local time)
         const today = new Date();
         const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
         
-        // Query scans collection for today's data
-        const scansSnap = await getDocs(collection(db, "scans"));
-        const allScans = scansSnap.docs.map(doc => doc.data());
+        // Use cached scan data for better performance
+        const allScans = await fetchScansWithCache(db);
         
         // Filter to today's scans
         let todayLogs = allScans.filter(scan => {
@@ -863,10 +860,9 @@ const Dashboard = React.memo(function Dashboard({ userDoc, isAdmin }) {
 });
 
 // Top Responders component
-const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin }) {
+const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin, timePeriod = 'weekly' }) {
   const [responders, setResponders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [timePeriod, setTimePeriod] = useState('weekly');
 
   useEffect(() => {
     let mounted = true;
@@ -890,6 +886,13 @@ const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin }
             break;
           case 'monthly':
             startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+            break;
+          case 'quarterly':
+            const quarter = Math.floor(now.getMonth() / 3);
+            startDate = new Date(now.getFullYear(), quarter * 3, 1);
+            break;
+          case 'yearly':
+            startDate = new Date(now.getFullYear(), 0, 1);
             break;
           case 'alltime':
             startDate = new Date(2020, 0, 1); // Far back date
@@ -1019,6 +1022,8 @@ const TopResponders = React.memo(function TopResponders({ db, userDoc, isAdmin }
       case 'daily': return 'Today';
       case 'weekly': return 'This Week';  
       case 'monthly': return 'This Month';
+      case 'quarterly': return 'This Quarter';
+      case 'yearly': return 'This Year';
       case 'alltime': return 'All Time';
       default: return 'Today';
     }
@@ -1551,23 +1556,15 @@ function Shell({ user, onSignOut }) {
         )}
 
         {active === "Dashboard" && (
-          <>
-            <Card>
-              <CardHeader 
-                title={`Dashboard - ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`}
-                subtitle="Overview of live assistance activity" 
-              />
-              <CardBody>
-                <Dashboard userDoc={userDoc} isAdmin={isAdmin} />
-              </CardBody>
-            </Card>
-            <Card>
-              <CardHeader title="Top Responders" subtitle="Leaderboard of fastest and most active associates" />
-              <CardBody>
-                <TopResponders db={db} userDoc={userDoc} isAdmin={isAdmin} />
-              </CardBody>
-            </Card>
-          </>
+          <Card>
+            <CardHeader 
+              title={`Dashboard - ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`}
+              subtitle="Live activity overview with area analytics" 
+            />
+            <CardBody>
+              <DashboardContainer userDoc={userDoc} isAdmin={isAdmin} db={db} />
+            </CardBody>
+          </Card>
         )}
 
         {active === "Insights" && (
@@ -2024,3 +2021,527 @@ function mapAuthError(err) {
   return err?.message || "Something went wrong.";
 }
 
+
+// ===== NEW DASHBOARD COMPONENTS (Dec 2025) =====
+
+// Dashboard data cache to reduce Firestore reads
+const dashboardCache = {
+  scans: null,
+  scansTimestamp: null,
+  logs: null,
+  logsTimestamp: null,
+  TTL: 30000, // 30 second cache TTL
+  
+  isScansValid() {
+    return this.scans && this.scansTimestamp && (Date.now() - this.scansTimestamp < this.TTL);
+  },
+  
+  isLogsValid() {
+    return this.logs && this.logsTimestamp && (Date.now() - this.logsTimestamp < this.TTL);
+  },
+  
+  setScans(scans) {
+    this.scans = scans;
+    this.scansTimestamp = Date.now();
+  },
+  
+  setLogs(logs) {
+    this.logs = logs;
+    this.logsTimestamp = Date.now();
+  },
+  
+  getScans() {
+    return this.isScansValid() ? this.scans : null;
+  },
+  
+  getLogs() {
+    return this.isLogsValid() ? this.logs : null;
+  },
+  
+  clear() {
+    this.scans = null;
+    this.scansTimestamp = null;
+    this.logs = null;
+    this.logsTimestamp = null;
+  }
+};
+
+// Shared function to fetch scans with caching
+async function fetchScansWithCache(db, forceRefresh = false) {
+  // Return cached data if valid and not forcing refresh
+  const cached = dashboardCache.getScans();
+  if (cached && !forceRefresh) {
+    return cached;
+  }
+  
+  const { getDocs, collection } = await import("firebase/firestore");
+  const scansSnap = await getDocs(collection(db, "scans"));
+  const scans = scansSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  
+  dashboardCache.setScans(scans);
+  return scans;
+}
+
+// Preload Insights logs data in background
+async function preloadInsightsData(db) {
+  // Skip if already cached
+  if (dashboardCache.isLogsValid()) return;
+  
+  try {
+    const { getDocs, collection } = await import("firebase/firestore");
+    const logsSnap = await getDocs(collection(db, "logs"));
+    const logs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    dashboardCache.setLogs(logs);
+    console.log("Preloaded Insights data:", logs.length, "logs");
+  } catch (error) {
+    console.error("Error preloading Insights data:", error);
+  }
+}
+
+
+// Shared time period options
+const TIME_PERIODS = [
+  { value: 'daily', label: 'Today' },
+  { value: 'weekly', label: 'This Week' },
+  { value: 'monthly', label: 'This Month' },
+  { value: 'quarterly', label: 'This Quarter' },
+  { value: 'yearly', label: 'This Year' }
+];
+
+// Helper function to get date range for time period
+function getDateRangeForPeriod(period) {
+  const now = new Date();
+  let startDate;
+  
+  switch (period) {
+    case 'daily':
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      break;
+    case 'weekly':
+      const dayOfWeek = now.getDay();
+      startDate = new Date(now.getTime() - (dayOfWeek * 24 * 60 * 60 * 1000));
+      startDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+      break;
+    case 'monthly':
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      break;
+    case 'quarterly':
+      const quarter = Math.floor(now.getMonth() / 3);
+      startDate = new Date(now.getFullYear(), quarter * 3, 1);
+      break;
+    case 'yearly':
+      startDate = new Date(now.getFullYear(), 0, 1);
+      break;
+    default:
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+  
+  return { startDate, endDate: now };
+}
+
+// Helper to filter scans by user's stores
+function filterScansByUserStores(scans, userDoc, isAdmin) {
+  if (isAdmin || !userDoc) return scans;
+  
+  const accessibleStores = userDoc.allowedStores || (userDoc.storeNumber ? [userDoc.storeNumber] : []);
+  const normalizedAccessible = accessibleStores.map(store => {
+    const storeStr = String(store);
+    return storeStr.replace(/^0+/, '') || '0';
+  });
+  
+  return scans.filter(scan => {
+    if (!scan.storeNumber) return false;
+    const normalizedScanStore = String(scan.storeNumber).replace(/^0+/, '') || '0';
+    return normalizedAccessible.includes(normalizedScanStore);
+  });
+}
+
+// Area Scans Component - Shows all areas with scan counts
+const AreaScans = React.memo(function AreaScans({ db, userDoc, isAdmin, timePeriod, onAreaClick }) {
+  const [areas, setAreas] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!isAdmin && !userDoc) return;
+    
+    let mounted = true;
+    
+    async function fetchAreaScans() {
+      setLoading(true);
+      try {
+        const { startDate } = getDateRangeForPeriod(timePeriod);
+        
+        // Use cached scan data
+        let scans = await fetchScansWithCache(db);
+        
+        // Filter by user's stores
+        scans = filterScansByUserStores(scans, userDoc, isAdmin);
+        
+        // Filter by time period
+        scans = scans.filter(scan => {
+          if (!scan.timestamp) return false;
+          const scanTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+          return scanTime >= startDate;
+        });
+        
+        // Aggregate by area
+        const areaStats = {};
+        scans.forEach(scan => {
+          const area = (scan.areaDescription || scan.area || 'Unknown').trim();
+          if (!areaStats[area]) {
+            areaStats[area] = { name: area, totalScans: 0, acceptedScans: 0, scans: [] };
+          }
+          areaStats[area].totalScans++;
+          areaStats[area].scans.push(scan);
+          if (scan.claimedBy || scan.claimedByName) {
+            areaStats[area].acceptedScans++;
+          }
+        });
+        
+        // Sort by total scans descending
+        const sortedAreas = Object.values(areaStats).sort((a, b) => b.totalScans - a.totalScans);
+        
+        if (mounted) {
+          setAreas(sortedAreas);
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("Error fetching area scans:", error);
+        if (mounted) setLoading(false);
+      }
+    }
+    
+    fetchAreaScans();
+    return () => { mounted = false; };
+  }, [db, timePeriod, isAdmin, userDoc?.allowedStores, userDoc?.storeNumber]);
+
+  return (
+    <div className="rounded-xl border border-themed bg-tertiary p-4 h-full">
+      <h3 className="text-lg font-semibold text-primary mb-3">Area Scans</h3>
+      {loading ? (
+        <div className="text-muted text-sm">Loading...</div>
+      ) : areas.length === 0 ? (
+        <div className="text-muted text-sm">No scans for this period</div>
+      ) : (
+        <div className="space-y-2 max-h-[300px] overflow-y-auto">
+          {areas.map((area, idx) => (
+            <div
+              key={area.name}
+              onClick={() => onAreaClick && onAreaClick(area)}
+              className="flex justify-between items-center p-2 rounded-lg bg-secondary hover:bg-primary cursor-pointer transition-colors border border-transparent hover:border-themed"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted w-5">{idx + 1}.</span>
+                <span className="text-sm text-primary font-medium truncate max-w-[150px]">{area.name}</span>
+              </div>
+              <div className="flex gap-3 text-xs">
+                <span className="text-muted">{area.totalScans} scans</span>
+                <span className="text-green-500">{area.acceptedScans} claimed</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+// Live Scan Feed Component - Polls every 25 seconds
+const LiveScanFeed = React.memo(function LiveScanFeed({ db, userDoc, isAdmin }) {
+  const [scans, setScans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState(null);
+
+  const fetchScans = useCallback(async () => {
+    try {
+      const { getDocs, collection, query, orderBy, limit } = await import("firebase/firestore");
+      
+      const q = query(collection(db, "scans"), orderBy("timestamp", "desc"), limit(50));
+      const scansSnap = await getDocs(q);
+      let recentScans = scansSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      
+      // Filter by user's stores
+      recentScans = filterScansByUserStores(recentScans, userDoc, isAdmin);
+      
+      // Take top 20 after filtering
+      recentScans = recentScans.slice(0, 20);
+      
+      setScans(recentScans);
+      setLastUpdate(new Date());
+      setLoading(false);
+    } catch (error) {
+      console.error("Error fetching live scans:", error);
+      setLoading(false);
+    }
+  }, [db, userDoc, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin && !userDoc) return;
+    
+    fetchScans();
+    
+    // Poll every 25 seconds
+    const interval = setInterval(fetchScans, 25000);
+    return () => clearInterval(interval);
+  }, [fetchScans, isAdmin, userDoc]);
+
+  const getTimeAgo = (timestamp) => {
+    if (!timestamp) return '';
+    const time = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    const diff = Date.now() - time.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'Just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
+  return (
+    <div className="rounded-xl border border-themed bg-tertiary p-4 h-full">
+      <div className="flex justify-between items-center mb-3">
+        <h3 className="text-lg font-semibold text-primary">Live Feed</h3>
+        <span className="text-xs text-muted">
+          {lastUpdate ? `Updated ${getTimeAgo({ toDate: () => lastUpdate })}` : ''}
+        </span>
+      </div>
+      {loading ? (
+        <div className="text-muted text-sm">Loading...</div>
+      ) : scans.length === 0 ? (
+        <div className="text-muted text-sm">No recent scans</div>
+      ) : (
+        <div className="space-y-2 max-h-[300px] overflow-y-auto">
+          {scans.map((scan) => (
+            <div
+              key={scan.id}
+              className={`p-2 rounded-lg border ${scan.claimedBy ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-secondary border-themed'}`}
+            >
+              <div className="flex justify-between items-start">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-primary truncate">
+                    {scan.areaDescription || scan.area || 'Unknown Area'}
+                  </div>
+                  <div className="text-xs text-muted">
+                    Store {scan.storeNumber} • {getTimeAgo(scan.timestamp)}
+                  </div>
+                </div>
+                <div className="ml-2">
+                  {scan.claimedBy ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-800 text-green-700 dark:text-green-300">
+                      Claimed
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 dark:bg-yellow-800 text-yellow-700 dark:text-yellow-300">
+                      Pending
+                    </span>
+                  )}
+                </div>
+              </div>
+              {scan.claimedByName && (
+                <div className="text-xs text-green-600 dark:text-green-400 mt-1">
+                  → {scan.claimedByName}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+// Area Details Modal - Shows detailed metrics for a selected area
+const AreaDetailsModal = React.memo(function AreaDetailsModal({ area, timePeriod, onClose }) {
+  if (!area) return null;
+
+  const scans = area.scans || [];
+  
+  // Calculate response time metrics
+  const respondedScans = scans.filter(s => s.claimedAt && s.timestamp);
+  const responseTimes = respondedScans.map(s => {
+    const start = s.timestamp.toDate ? s.timestamp.toDate() : new Date(s.timestamp);
+    const end = s.claimedAt.toDate ? s.claimedAt.toDate() : new Date(s.claimedAt);
+    return (end - start) / 60000; // minutes
+  });
+  
+  const avgResponseTime = responseTimes.length > 0 
+    ? Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length) 
+    : 0;
+  const fastestResponse = responseTimes.length > 0 ? Math.round(Math.min(...responseTimes)) : 0;
+  const slowestResponse = responseTimes.length > 0 ? Math.round(Math.max(...responseTimes)) : 0;
+  
+  // Top responders for this area
+  const responderCounts = {};
+  respondedScans.forEach(s => {
+    const name = s.claimedByName || 'Unknown';
+    responderCounts[name] = (responderCounts[name] || 0) + 1;
+  });
+  const topResponders = Object.entries(responderCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  // Scans by hour
+  const hourCounts = {};
+  scans.forEach(s => {
+    if (!s.timestamp) return;
+    const time = s.timestamp.toDate ? s.timestamp.toDate() : new Date(s.timestamp);
+    const hour = time.getHours();
+    hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+  });
+  const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0];
+  
+  // Scans by day of week
+  const dayCounts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+  scans.forEach(s => {
+    if (!s.timestamp) return;
+    const time = s.timestamp.toDate ? s.timestamp.toDate() : new Date(s.timestamp);
+    dayCounts[time.getDay()]++;
+  });
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const busiestDay = Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0];
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-primary rounded-xl border border-themed max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="p-6">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-primary">{area.name}</h2>
+              <p className="text-sm text-muted">{TIME_PERIODS.find(t => t.value === timePeriod)?.label || 'Today'}</p>
+            </div>
+            <button onClick={onClose} className="text-muted hover:text-primary text-2xl leading-none">&times;</button>
+          </div>
+          
+          {/* Summary Stats */}
+          <div className="grid grid-cols-3 gap-4 mb-6">
+            <div className="bg-secondary rounded-lg p-3 text-center">
+              <div className="text-2xl font-bold text-primary">{area.totalScans}</div>
+              <div className="text-xs text-muted">Total Scans</div>
+            </div>
+            <div className="bg-secondary rounded-lg p-3 text-center">
+              <div className="text-2xl font-bold text-green-500">{area.acceptedScans}</div>
+              <div className="text-xs text-muted">Claimed</div>
+            </div>
+            <div className="bg-secondary rounded-lg p-3 text-center">
+              <div className="text-2xl font-bold text-primary">
+                {area.totalScans > 0 ? Math.round((area.acceptedScans / area.totalScans) * 100) : 0}%
+              </div>
+              <div className="text-xs text-muted">Claim Rate</div>
+            </div>
+          </div>
+          
+          {/* Response Time Metrics */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-primary mb-2">Response Times</h3>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-tertiary rounded-lg p-2">
+                <div className="text-lg font-semibold text-primary">{avgResponseTime}m</div>
+                <div className="text-xs text-muted">Average</div>
+              </div>
+              <div className="bg-tertiary rounded-lg p-2">
+                <div className="text-lg font-semibold text-green-500">{fastestResponse}m</div>
+                <div className="text-xs text-muted">Fastest</div>
+              </div>
+              <div className="bg-tertiary rounded-lg p-2">
+                <div className="text-lg font-semibold text-orange-500">{slowestResponse}m</div>
+                <div className="text-xs text-muted">Slowest</div>
+              </div>
+            </div>
+          </div>
+          
+          {/* Top Responders */}
+          {topResponders.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-semibold text-primary mb-2">Top Responders</h3>
+              <div className="space-y-1">
+                {topResponders.map(([name, count], idx) => (
+                  <div key={name} className="flex justify-between items-center bg-tertiary rounded p-2">
+                    <span className="text-sm text-primary">{idx + 1}. {name}</span>
+                    <span className="text-sm text-muted">{count} claims</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Time-based Insights */}
+          <div>
+            <h3 className="text-sm font-semibold text-primary mb-2">Activity Patterns</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-tertiary rounded-lg p-3">
+                <div className="text-sm text-muted">Peak Hour</div>
+                <div className="text-lg font-semibold text-primary">
+                  {peakHour ? `${peakHour[0]}:00 (${peakHour[1]} scans)` : 'N/A'}
+                </div>
+              </div>
+              <div className="bg-tertiary rounded-lg p-3">
+                <div className="text-sm text-muted">Busiest Day</div>
+                <div className="text-lg font-semibold text-primary">
+                  {busiestDay ? `${dayNames[busiestDay[0]]} (${busiestDay[1]} scans)` : 'N/A'}
+                </div>
+              </div>
+            </div>
+            
+            {/* Day of week breakdown */}
+            <div className="mt-3 flex justify-between">
+              {dayNames.map((day, idx) => (
+                <div key={day} className="text-center">
+                  <div className="text-xs text-muted">{day}</div>
+                  <div className="text-sm font-medium text-primary">{dayCounts[idx]}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Enhanced Dashboard Container with shared time selector
+const DashboardContainer = React.memo(function DashboardContainer({ userDoc, isAdmin, db }) {
+  const [timePeriod, setTimePeriod] = useState('daily');
+  const [selectedArea, setSelectedArea] = useState(null);
+  
+  // Preload Insights data in background when Dashboard loads
+  useEffect(() => {
+    preloadInsightsData(db);
+  }, [db]);
+
+  return (
+    <div className="space-y-6">
+      {/* Shared Time Period Selector */}
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-semibold text-primary">Dashboard</h2>
+        <select
+          value={timePeriod}
+          onChange={(e) => setTimePeriod(e.target.value)}
+          className="px-3 py-1.5 text-sm border border-themed bg-secondary rounded-lg text-primary"
+        >
+          {TIME_PERIODS.map(p => (
+            <option key={p.value} value={p.value}>{p.label}</option>
+          ))}
+        </select>
+      </div>
+      
+      {/* Quick Stats */}
+      <Dashboard userDoc={userDoc} isAdmin={isAdmin} />
+      
+      {/* Live Feed - Full Width */}
+      <LiveScanFeed db={db} userDoc={userDoc} isAdmin={isAdmin} />
+      
+      {/* Two Column Layout: Top Responders | Area Scans */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <TopResponders db={db} userDoc={userDoc} isAdmin={isAdmin} timePeriod={timePeriod} />
+        <AreaScans db={db} userDoc={userDoc} isAdmin={isAdmin} timePeriod={timePeriod} onAreaClick={setSelectedArea} />
+      </div>
+      
+      {/* Area Details Modal */}
+      {selectedArea && (
+        <AreaDetailsModal area={selectedArea} timePeriod={timePeriod} onClose={() => setSelectedArea(null)} />
+      )}
+    </div>
+  );
+});
+
+// ===== END NEW DASHBOARD COMPONENTS =====
