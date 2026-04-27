@@ -1,4 +1,4 @@
-import { initializeApp } from "firebase-admin/app";
+import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
@@ -13,13 +13,13 @@ import sgMail from "@sendgrid/mail";
 
 // Import webhook handler and automation functions
 export { groupmeWebhook } from './groupme-webhook.js';
-// Workvivo functions temporarily disabled
-// export { workvivoConnect, workvivoConfig, workvivoDisconnect, workvivoCheckCompletion } from './workvivo-automation.js';
+export { workvivoConnect, workvivoConfig, workvivoDisconnect, workvivoCheckCompletion, connectWithToken, checkWorkvivoTokens, testReauthEmail, pollWorkvivoReply } from './workvivo-automation.js';
+// workvivo-monitor.js does not exist in this tree — leave disabled.
 // export { workvivoMonitor } from './workvivo-monitor.js';
 export { submitTicket, getTickets, getMyTickets, getTicketDetails, respondToTicket, handleEmailReply, lookupTicket, updateTicketPriority } from './tickets.js';
 export { monitorStoresWithoutBots, monitorBotDeletions, checkBotsManually } from './bot-monitor.js';
 export { logScanMetrics } from './metrics-logger.js';
-// import { postToWorkvivo } from './workvivo-automation.js';
+import { postToWorkvivo, ENCRYPT_KEY as WORKVIVO_ENCRYPT_KEY, RESEND_KEY as WORKVIVO_RESEND_KEY } from './workvivo-automation.js';
 
 // ===== Secrets (set with `firebase functions:secrets:set ...`) =====
 const GROUPME_CLIENT_ID = defineSecret("GROUPME_CLIENT_ID");
@@ -27,7 +27,9 @@ const API_KEY = defineSecret("API_KEY");
 // GroupMe doesn't use client_secret for user applications
 
 // ===== Admin SDK =====
-initializeApp();
+// Guard against double-init: workvivo-automation.js (imported above) may have
+// already called initializeApp() during its module load.
+if (!getApps().length) initializeApp();
 const db = getFirestore();
 const storage = getStorage();
 
@@ -109,18 +111,12 @@ async function authenticateUser(req) {
   }
 }
 
-// Check if user is admin (using Custom Claims for security)
+// Check if user is admin (using Custom Claims ONLY for security)
+// SECURITY: No email fallback - requires admin claim to be set via set-admin-claim.js
 async function isAdmin(uid) {
   try {
     const user = await getAuth().getUser(uid);
-    // Check custom claim first (secure, server-side only)
-    if (user.customClaims?.admin === true) {
-      return true;
-    }
-    // Fallback to database check for backwards compatibility
-    // TODO: Remove this after all admins have custom claims set
-    const userDoc = await db.collection('users').doc(uid).get();
-    return userDoc.exists && userDoc.data().email === 'sinaptick@gmail.com';
+    return user.customClaims?.admin === true;
   } catch (error) {
     logger.error('Error checking admin status:', error);
     return false;
@@ -134,8 +130,8 @@ function sanitizeInput(input, maxLength = 100) {
 }
 
 // Enhanced spam protection with IP blocking
-const rateLimitStore = new Map();
-const suspiciousActivity = new Map(); // Track suspicious IPs
+// Rate limiting now uses Firestore - see checkRateLimit function
+// Suspicious activity tracking now uses Firestore
 
 // Check if IP is blocked in Firestore
 async function isIPBlocked(ip) {
@@ -157,72 +153,105 @@ async function isIPBlocked(ip) {
   }
 }
 
-// Track suspicious activity and auto-block repeat offenders
+// Track suspicious activity in Firestore and auto-block repeat offenders
 async function trackSuspiciousActivity(ip, reason) {
   const now = Date.now();
+  const oneHourAgo = new Date(now - 3600000);
   
-  if (!suspiciousActivity.has(ip)) {
-    suspiciousActivity.set(ip, []);
-  }
-  
-  const activities = suspiciousActivity.get(ip);
-  const recentActivities = activities.filter(a => a.time > now - 3600000); // Last hour
-  recentActivities.push({ time: now, reason });
-  
-  // Auto-block after 5 violations in an hour
-  if (recentActivities.length >= 5) {
-    await db.collection('blocked_ips').doc(ip).set({
+  try {
+    // Get recent violations from Firestore
+    const recentViolations = await db.collection("rate_limit_violations")
+      .where("ip", "==", ip)
+      .where("timestamp", ">=", oneHourAgo)
+      .get();
+    
+    // Add new violation
+    await db.collection("rate_limit_violations").add({
       ip,
-      blockedAt: FieldValue.serverTimestamp(),
-      reason: 'Auto-blocked: Multiple spam attempts',
-      violations: recentActivities.map(a => a.reason),
-      expiresAt: new Date(now + 24 * 60 * 60 * 1000), // 24 hour block
-      autoBlocked: true
+      reason,
+      timestamp: FieldValue.serverTimestamp()
     });
     
-    // Log to spam_logs for admin review
-    await db.collection('spam_logs').add({
-      ip,
-      timestamp: FieldValue.serverTimestamp(),
-      action: 'auto_blocked',
-      violations: recentActivities.length,
-      details: recentActivities
-    });
+    const violationCount = recentViolations.size + 1;
     
-    suspiciousActivity.delete(ip); // Clear after blocking
-    return true;
+    // Auto-block after 5 violations in an hour
+    if (violationCount >= 5) {
+      await db.collection("blocked_ips").doc(ip).set({
+        ip,
+        blockedAt: FieldValue.serverTimestamp(),
+        reason: "Auto-blocked: Multiple rate limit violations",
+        violations: violationCount,
+        expiresAt: new Date(now + 24 * 60 * 60 * 1000),
+        autoBlocked: true
+      });
+      
+      await db.collection("spam_logs").add({
+        ip,
+        timestamp: FieldValue.serverTimestamp(),
+        action: "auto_blocked",
+        violations: violationCount,
+        reason: reason
+      });
+      
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    logger.error("Error tracking suspicious activity:", error);
+    return false;
   }
-  
-  suspiciousActivity.set(ip, recentActivities);
-  return false;
 }
 
-// Enhanced rate limiting with violation tracking
+// Firestore-based rate limiting with persistence across cold starts
 async function checkRateLimit(ip, maxRequests = 10, windowMs = 60000) {
   // First check if IP is blocked
   if (await isIPBlocked(ip)) {
-    return { allowed: false, reason: 'blocked' };
+    return { allowed: false, reason: "blocked" };
   }
   
   const now = Date.now();
-  const windowStart = now - windowMs;
+  const windowStart = new Date(now - windowMs);
+  const rateLimitDocId = ip.replace(/\./g, "_"); // Firestore doc IDs cant have dots
   
-  if (!rateLimitStore.has(ip)) {
-    rateLimitStore.set(ip, []);
+  try {
+    const rateLimitRef = db.collection("rate_limits").doc(rateLimitDocId);
+    
+    // Use transaction for atomic read-modify-write
+    const result = await db.runTransaction(async (transaction) => {
+      const doc = await transaction.get(rateLimitRef);
+      
+      let requests = [];
+      if (doc.exists) {
+        const data = doc.data();
+        requests = (data.requests || []).filter(t => t > windowStart.getTime());
+      }
+      
+      if (requests.length >= maxRequests) {
+        return { allowed: false, reason: "rate_limit", count: requests.length };
+      }
+      
+      requests.push(now);
+      
+      transaction.set(rateLimitRef, {
+        ip,
+        requests,
+        updatedAt: FieldValue.serverTimestamp(),
+        expiresAt: new Date(now + windowMs * 2)
+      });
+      
+      return { allowed: true, count: requests.length };
+    });
+    
+    if (!result.allowed && result.reason === "rate_limit") {
+      await trackSuspiciousActivity(ip, "Rate limit exceeded: " + result.count + " requests");
+    }
+    
+    return result;
+  } catch (error) {
+    logger.error("Error checking rate limit:", error);
+    return { allowed: true }; // Fail open
   }
-  
-  const requests = rateLimitStore.get(ip);
-  const validRequests = requests.filter(time => time > windowStart);
-  
-  if (validRequests.length >= maxRequests) {
-    // Track this as suspicious activity
-    await trackSuspiciousActivity(ip, `Rate limit exceeded: ${validRequests.length} requests in ${windowMs/1000}s`);
-    return { allowed: false, reason: 'rate_limit' };
-  }
-  
-  validRequests.push(now);
-  rateLimitStore.set(ip, validRequests);
-  return { allowed: true };
 }
 
 // ===== Block Google Sign-In =====
@@ -375,166 +404,71 @@ export const groupmeCallback = onRequest(
             <script>
               async function handleOAuth() {
                 try {
-                  // Debug: Log what we received
-                  console.log('Full URL:', window.location.href);
-                  console.log('Hash fragment:', window.location.hash);
-                  console.log('Query string:', window.location.search);
-                  
-                  // Log all URL parameters for debugging
-                  const allParams = {};
-                  if (window.location.search) {
-                    const urlParams = new URLSearchParams(window.location.search);
-                    for (const [key, value] of urlParams) {
-                      allParams['query_' + key] = value;
-                    }
-                  }
-                  if (window.location.hash) {
-                    const hashParams = new URLSearchParams(window.location.hash.substring(1));
-                    for (const [key, value] of hashParams) {
-                      allParams['hash_' + key] = value;
-                    }
-                  }
-                  console.log('All parameters:', allParams);
-                  
                   // GroupMe OAuth - handle both Implicit Grant (token) and Authorization Code flows
                   const fragment = window.location.hash.substring(1);
                   const query = window.location.search.substring(1);
                   const fragmentParams = new URLSearchParams(fragment);
                   const queryParams = new URLSearchParams(query);
-                  
+
                   // Check for access token first (Implicit Grant Flow)
                   let accessToken = fragmentParams.get('access_token') || fragmentParams.get('token');
                   if (!accessToken) {
                     // Fallback to query parameters
                     accessToken = queryParams.get('access_token') || queryParams.get('token');
                   }
-                  
+
                   // Check for authorization code (Authorization Code Flow)
                   const authCode = queryParams.get('code') || fragmentParams.get('code');
-                  
+
                   const error = fragmentParams.get('error') || queryParams.get('error');
                   const errorDescription = fragmentParams.get('error_description') || queryParams.get('error_description');
                   const state = "${sanitizeInput(state, 50)}";
-                  
-                  // Debug output - show what GroupMe actually sent
-                  document.getElementById('message').innerHTML = \`
-                    <div style="text-align: left; font-size: 14px; background: #333; color: #fff; padding: 2rem; border-radius: 0.5rem; margin: 1rem 0; font-family: monospace;">
-                      <h3 style="color: #ff6b6b; margin-bottom: 1rem;">🔍 GROUPME OAUTH DEBUG - COPY THIS:</h3>
-                      <div style="background: #000; padding: 1rem; border-radius: 0.25rem; margin: 0.5rem 0;">
-                        <strong>Full URL:</strong><br>\${window.location.href}<br><br>
-                        <strong>Fragment:</strong><br>\${fragment}<br><br>
-                        <strong>Query:</strong><br>\${query}<br><br>
-                        <strong>All Parameters:</strong><br>\${JSON.stringify(allParams, null, 2)}<br><br>
-                        <strong>Access Token (Implicit):</strong><br>\${accessToken || 'NOT FOUND'}<br><br>
-                        <strong>Auth Code (Code Flow):</strong><br>\${authCode || 'NOT FOUND'}<br><br>
-                        <strong>Error:</strong><br>\${error || 'NONE'}<br><br>
-                        <strong>Error Description:</strong><br>\${errorDescription || 'NONE'}<br>
-                      </div>
-                      <div id="step-log" style="margin-top: 1rem; color: #4ecdc4;">Step 1: Checking what GroupMe sent...</div>
-                    </div>
-                  \`;
-                  
+
                   // Check for OAuth error first
                   if (error) {
-                    throw new Error(\`OAuth error: \${error}\${errorDescription ? ' - ' + errorDescription : ''}\`);
+                    throw new Error(errorDescription || 'Authorization was denied');
                   }
-                  
+
                   // If we have an authorization code but no access token, handle it server-side
                   if (authCode && !accessToken) {
-                    document.getElementById('step-log').innerHTML += '<br>Step 1.5: Found auth code, processing server-side to avoid CORS...';
-                    
                     // Send auth code to our backend for processing (avoids CORS issues)
-                    try {
-                      document.getElementById('step-log').innerHTML += '<br>Step 1.5a: Calling exchange-code Cloud Function directly...';
-                      
-                      const exchangeResponse = await fetch('https://groupmeexchangecode-46us5rurra-uc.a.run.app', {
-                        method: 'POST',
-                        headers: { 
-                          'Content-Type': 'application/json',
-                          'Accept': 'application/json'
-                        },
-                        body: JSON.stringify({ code: authCode, state: state }),
-                        mode: 'cors'
-                      });
-                      
-                      document.getElementById('step-log').innerHTML += \`<br>Step 1.5b: Exchange response status: \${exchangeResponse.status}\`;
-                      
-                      if (exchangeResponse.ok) {
-                        const tokenData = await exchangeResponse.json();
-                        accessToken = tokenData.access_token;
-                        document.getElementById('step-log').innerHTML += '<br>Step 1.6: Success! Got access token from server-side processing.';
-                      } else {
-                        const errorText = await exchangeResponse.text();
-                        document.getElementById('step-log').innerHTML += \`<br>Step 1.6: Server-side processing failed (HTTP \${exchangeResponse.status}): \${errorText}\`;
-                        throw new Error(\`Failed to process authorization code: HTTP \${exchangeResponse.status} - \${errorText}\`);
-                      }
-                    } catch (exchangeError) {
-                      document.getElementById('step-log').innerHTML += \`<br>Step 1.6: Exchange failed: \${exchangeError.message}\`;
-                      
-                      // If fetch fails completely (CORS/network), fall back to direct Cloud Function URL
-                      if (exchangeError.message.includes('Failed to fetch')) {
-                        document.getElementById('step-log').innerHTML += '<br>Step 1.7: Trying direct Cloud Function URL as fallback...';
-                        try {
-                          const directResponse = await fetch('https://groupmeexchangecode-46us5rurra-uc.a.run.app', {
-                            method: 'POST',
-                            headers: { 
-                              'Content-Type': 'application/json',
-                              'Accept': 'application/json'
-                            },
-                            body: JSON.stringify({ code: authCode, state: state }),
-                            mode: 'cors'
-                          });
-                          
-                          if (directResponse.ok) {
-                            const tokenData = await directResponse.json();
-                            accessToken = tokenData.access_token;
-                            document.getElementById('step-log').innerHTML += '<br>Step 1.8: Success! Got access token from direct Cloud Function.';
-                          } else {
-                            const errorText = await directResponse.text();
-                            document.getElementById('step-log').innerHTML += \`<br>Step 1.8: Direct Cloud Function failed: \${errorText}\`;
-                            throw new Error(\`Direct exchange failed: \${errorText}\`);
-                          }
-                        } catch (directError) {
-                          document.getElementById('step-log').innerHTML += \`<br>Step 1.8: Direct exchange failed: \${directError.message}\`;
-                          throw new Error(\`Both hosting and direct Cloud Function failed: \${directError.message}\`);
-                        }
-                      } else {
-                        throw new Error(\`GroupMe authorization code exchange failed: \${exchangeError.message}\`);
-                      }
+                    const exchangeResponse = await fetch('https://groupmeexchangecode-46us5rurra-uc.a.run.app', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                      },
+                      body: JSON.stringify({ code: authCode, state: state }),
+                      mode: 'cors'
+                    });
+
+                    if (exchangeResponse.ok) {
+                      const tokenData = await exchangeResponse.json();
+                      accessToken = tokenData.access_token;
+                    } else {
+                      throw new Error('Failed to process authorization. Please try again.');
                     }
                   }
-                  
+
                   if (!accessToken) {
-                    throw new Error('No access token or usable authorization code received from GroupMe. Check debug info above.');
+                    throw new Error('No authorization received from GroupMe. Please try again.');
                   }
-                  
-                  // Step 2: Validate token and get user info
-                  document.getElementById('step-log').innerHTML += '<br>Step 2: Validating token with GroupMe API...';
+
+                  // Validate token and get user info
                   const response = await fetch(\`https://api.groupme.com/v3/users/me?token=\${encodeURIComponent(accessToken)}\`);
-                  
-                  document.getElementById('step-log').innerHTML += \`<br>Step 2.1: GroupMe API response status: \${response.status}\`;
-                  
+
                   if (!response.ok) {
-                    const errorText = await response.text();
-                    document.getElementById('step-log').innerHTML += \`<br>Step 2.2: GroupMe API error: \${errorText}\`;
-                    throw new Error(\`Failed to validate token: HTTP \${response.status} - \${errorText}\`);
+                    throw new Error('Failed to validate authorization. Please try again.');
                   }
-                  
+
                   const userData = await response.json();
-                  document.getElementById('step-log').innerHTML += \`<br>Step 2.3: GroupMe API response received\`;
-                  document.getElementById('step-log').innerHTML += \`<br>Step 2.4: User data: \${JSON.stringify(userData).substring(0, 200)}...\`;
-                  
                   const userId = userData.response?.id;
-                  
+
                   if (!userId) {
-                    document.getElementById('step-log').innerHTML += \`<br>Step 2.5: No user ID found in response\`;
-                    throw new Error('Failed to get user information from GroupMe response');
+                    throw new Error('Failed to get user information from GroupMe');
                   }
-                  
-                  document.getElementById('step-log').innerHTML += \`<br>Step 3: Got user ID: \${userId}\`;
-                  
+
                   // Store token in Firestore via our backend
-                  document.getElementById('step-log').innerHTML += '<br>Step 4: Storing token in backend...';
                   const storeResponse = await fetch('https://groupmestoretoken-46us5rurra-uc.a.run.app', {
                     method: 'POST',
                     headers: {
@@ -546,17 +480,12 @@ export const groupmeCallback = onRequest(
                       state: state
                     })
                   });
-                  
-                  document.getElementById('step-log').innerHTML += \`<br>Step 4.1: Store API response status: \${storeResponse.status}\`;
-                  
+
                   if (!storeResponse.ok) {
-                    const storeErrorText = await storeResponse.text();
-                    document.getElementById('step-log').innerHTML += \`<br>Step 4.2: Store API error: \${storeErrorText}\`;
-                    throw new Error(\`Failed to store token: HTTP \${storeResponse.status} - \${storeErrorText}\`);
+                    throw new Error('Failed to save connection. Please try again.');
                   }
-                  
-                  const storeResult = await storeResponse.json();
-                  document.getElementById('step-log').innerHTML += \`<br>Step 4.3: Store API success: \${JSON.stringify(storeResult)}\`;
+
+                  await storeResponse.json();
                   
                   // Success!
                   document.getElementById('title').textContent = 'GroupMe Connected!';
@@ -578,7 +507,7 @@ export const groupmeCallback = onRequest(
                       type: 'groupme_connected', 
                       userId: userId, 
                       state: state 
-                    }, '*');
+                    }, 'https://qrcallbox.com');
                     document.getElementById('message').innerHTML += '<br><br><em>Connection successful! You can close this window and return to the app.</em>';
                     
                     // Auto-close after 3 seconds on success
@@ -588,32 +517,8 @@ export const groupmeCallback = onRequest(
                   }
                   
                 } catch (error) {
-                  console.error('OAuth error:', error);
-                  document.getElementById('title').textContent = '❌ Connection Failed';
-                  document.getElementById('message').innerHTML = \`
-                    <div style="background: #ff4444; color: white; padding: 1rem; border-radius: 0.5rem; margin: 1rem 0;">
-                      <h3>❌ Connection Failed</h3>
-                      <p><strong>Error:</strong> \${error.message}</p>
-                      <p><strong>DO NOT CLOSE THIS WINDOW - COPY THE DEBUG INFO ABOVE!</strong></p>
-                    </div>
-                    <div style="text-align: left; font-size: 14px; background: #333; color: #fff; padding: 2rem; border-radius: 0.5rem; margin: 1rem 0; font-family: monospace;">
-                      <h3 style="color: #ff6b6b; margin-bottom: 1rem;">🔍 OAUTH DEBUG INFO - COPY THIS:</h3>
-                      <div style="background: #000; padding: 1rem; border-radius: 0.25rem; margin: 0.5rem 0;">
-                        <strong>Full URL:</strong><br>\${window.location.href}<br><br>
-                        <strong>Fragment:</strong><br>\${window.location.hash}<br><br>
-                        <strong>Query:</strong><br>\${window.location.search}<br><br>
-                        <strong>Error Message:</strong><br>\${error.message}<br><br>
-                        <strong>Error Stack:</strong><br>\${error.stack || 'No stack trace'}<br>
-                      </div>
-                    </div>
-                  \`;
-                  
-                  // Log to console as well
-                  console.log('OAUTH DEBUG INFO:');
-                  console.log('Full URL:', window.location.href);
-                  console.log('Fragment:', window.location.hash);
-                  console.log('Query:', window.location.search);
-                  console.log('Error:', error);
+                  document.getElementById('title').textContent = 'Connection Failed';
+                  document.getElementById('message').innerHTML = \`<span class="error">\${error.message}</span><br><br>Please close this window and try again.\`;
                 }
               }
               
@@ -713,7 +618,7 @@ export const groupmeExchangeCode = onRequest({
     
   } catch (e) {
     logger.error("Code exchange error:", e.message, e.stack);
-    res.status(500).json({ error: `Internal server error: ${e.message}` });
+    res.status(500).json({ error: "Failed to process authorization. Please try again." });
   }
 });
 
@@ -767,7 +672,7 @@ export const groupmeStoreToken = onRequest({
     
   } catch (e) {
     logger.error("Store token error:", e.message, e.stack);
-    res.status(500).send(`Error storing token: ${e.message}`);
+    res.status(500).send("Failed to save connection. Please try again.");
   }
 });
 
@@ -1038,7 +943,7 @@ export const groupmeCreateBot = onRequest({
       return res.status(401).send("Authentication required");
     }
     // More specific error message for debugging
-    res.status(500).send(`Error creating bot: ${e.message}`);
+    res.status(500).send("Failed to create bot. Please try again.");
   }
 });
 
@@ -1265,7 +1170,7 @@ export const groupmeSyncBots = onRequest({
     res.json(response);
   } catch (e) {
     logger.error("Sync bots error:", e.message, e.stack);
-    res.status(500).send(`Error syncing bots: ${e.message}`);
+    res.status(500).send("Failed to sync bots. Please try again.");
   }
 });
 
@@ -1356,7 +1261,7 @@ export const groupmeFixBotStores = onRequest({
     });
   } catch (e) {
     logger.error("Fix bot stores error:", e.message, e.stack);
-    res.status(500).send(`Error fixing bot stores: ${e.message}`);
+    res.status(500).send("Failed to update bot stores. Please try again.");
   }
 });
 
@@ -1459,7 +1364,7 @@ export const groupmeDebugBots = onRequest({
     
   } catch (e) {
     logger.error("Bot debugging error:", e.message);
-    res.status(500).send(`Error debugging bots: ${e.message}`);
+    res.status(500).send("Failed to retrieve bot information. Please try again.");
   }
 });
 
@@ -1605,7 +1510,7 @@ export const groupmeAdminCreateBot = onRequest({
     
   } catch (e) {
     logger.error("Admin bot creation error:", e.message, e.stack);
-    res.status(500).send(`Error creating admin bot: ${e.message}`);
+    res.status(500).send("Failed to create bot. Please try again.");
   }
 });
 
@@ -1818,7 +1723,7 @@ export const groupmeDeleteBot = onRequest({
     res.json({ success: true, message: "Bot deleted successfully" });
   } catch (e) {
     logger.error("Delete bot error:", e.message, e.stack);
-    res.status(500).send(`Error deleting bot: ${e.message}`);
+    res.status(500).send("Failed to delete bot. Please try again.");
   }
 });
 
@@ -1992,7 +1897,7 @@ export const groupmeAdminUserData = onRequest({
     
   } catch (e) {
     logger.error("Admin GroupMe data fetch error:", e.message);
-    res.status(500).send(`Error fetching GroupMe data: ${e.message}`);
+    res.status(500).send("Failed to retrieve data. Please try again.");
   }
 });
 
@@ -2029,7 +1934,7 @@ export const mint = onRequest({
       return res.status(401).json({ error: "Authentication required" });
     }
     
-    const { store, area } = req.body || {};
+    const { store, area, areaDescription } = req.body || {};
     if (!store || !area) {
       return res.status(400).json({ error: "Missing store or area" });
     }
@@ -2037,12 +1942,16 @@ export const mint = onRequest({
     // Sanitize and validate inputs
     const sanitizedStore = sanitizeInput(String(store), 10);
     const sanitizedArea = sanitizeInput(String(area), 50);
-    
+    // areaDescription is the full display name (e.g., "Electronics A-14")
+    // area is the base location for analytics grouping (e.g., "Electronics")
+    const sanitizedAreaDescription = areaDescription ? sanitizeInput(String(areaDescription), 100) : null;
+
     if (!/^\d{3,6}$/.test(sanitizedStore)) {
       return res.status(400).json({ error: "Store number must be 3-6 digits" });
     }
 
-    if (!/^[a-zA-Z0-9\s._-]{1,50}$/.test(sanitizedArea)) {
+    // Allow most characters in area names (length check only, sanitizeInput removes dangerous chars)
+    if (!sanitizedArea || sanitizedArea.length < 1 || sanitizedArea.length > 50) {
       return res.status(400).json({ error: "Invalid area name" });
     }
     
@@ -2071,9 +1980,9 @@ export const mint = onRequest({
 
     // Generate unique token
     const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    
+
     // Store token info
-    await db.collection("qr_tokens").doc(token).set({
+    const tokenData = {
       store: sanitizedStore,
       area: sanitizedArea,
       token,
@@ -2081,7 +1990,12 @@ export const mint = onRequest({
       createdAt: FieldValue.serverTimestamp(),
       scanned: false,
       scanCount: 0
-    });
+    };
+    // Include areaDescription if provided (for display, e.g., "Electronics A-14")
+    if (sanitizedAreaDescription) {
+      tokenData.areaDescription = sanitizedAreaDescription;
+    }
+    await db.collection("qr_tokens").doc(token).set(tokenData);
 
     res.json({ token });
   } catch (e) {
@@ -2091,10 +2005,11 @@ export const mint = onRequest({
 });
 
 // ===== 6) Handle QR scans (short URL redirect) =====
-export const s = onRequest({ 
+export const s = onRequest({
   region: REGION,
   cors: { origin: ALLOWED_ORIGINS },
-  invoker: "public"
+  invoker: "public",
+  secrets: [WORKVIVO_ENCRYPT_KEY, WORKVIVO_RESEND_KEY]
 }, async (req, res) => {
   try {
     // Enhanced rate limiting with IP blocking for QR scans
@@ -2292,7 +2207,10 @@ export const s = onRequest({
       timestamp: FieldValue.serverTimestamp(),
       qrCode: token,
       storeNumber: String(tokenData.store), // Ensure it's always a string
-      areaDescription: tokenData.area,
+      // area is base location for analytics grouping (e.g., "Electronics")
+      area: tokenData.area,
+      // areaDescription is full display name (e.g., "Electronics A-14") - falls back to area
+      areaDescription: tokenData.areaDescription || tokenData.area,
       // New location fields for reporting/insights (null for old format QRs)
       locationId: tokenData.locationId || null,      // e.g., "electronics", "beauty"
       locationMarker: tokenData.marker || null,      // e.g., "A1-2"
@@ -2313,9 +2231,21 @@ export const s = onRequest({
     const scanDoc = await db.collection("scans").add(scanRecord);
 
     // Send notifications to all platforms
-    await sendGroupMeNotification(tokenData.store, tokenData.area);
-    await sendWorkvivoNotification(tokenData.store, tokenData.area);
+    // GroupMe disabled - migrating to mobile app
+    // await sendGroupMeNotification(tokenData.store, tokenData.area);
     await sendAndroidNotification(tokenData.store, tokenData.area, scanDoc.id);
+
+    // Workvivo: postToWorkvivo handles Session-Key minting via Sendbird WS handshake
+    // (Workvivo's tenant rejects Access-Token-only REST). Fire-and-forget so a
+    // Workvivo failure never blocks the scan response.
+    const localTime = new Date().toLocaleTimeString("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric", minute: "2-digit", hour12: true,
+    }).toLowerCase().replace(/\s+/g, "");  // -> "2:44pm"
+    const workvivoMessage =
+      `Customer assistance needed at ${tokenData.areaDescription || tokenData.area} ${localTime}`;
+    postToWorkvivo(tokenData.store, workvivoMessage, WORKVIVO_ENCRYPT_KEY.value(), scanDoc.id)
+      .catch(err => logger.error("postToWorkvivo failed", { store: tokenData.store, scanId: scanDoc.id, error: err.message }));
 
     // Redirect to assistance page or show success message
     res.send(`
@@ -7302,7 +7232,7 @@ export const diagnosticScanResponses = onRequest({
 
     // Verify user is admin
     const userDoc = await db.collection('users').doc(uid).get();
-    if (!userDoc.exists || userDoc.data().email !== 'sinaptick@gmail.com') {
+    if (!await isAdmin(uid)) {
       return res.status(403).json({ error: 'Forbidden: Admin access required' });
     }
 
@@ -7386,7 +7316,7 @@ export const backfillGroupMeResponses = onRequest({
 
     // Verify user is admin
     const userDoc = await db.collection('users').doc(uid).get();
-    if (!userDoc.exists || userDoc.data().email !== 'sinaptick@gmail.com') {
+    if (!await isAdmin(uid)) {
       return res.status(403).json({ error: 'Forbidden: Admin access required' });
     }
 
@@ -7600,7 +7530,7 @@ export const cleanupTestScans = onRequest({
 
 /**
  * Set admin custom claim for a user
- * CRITICAL SECURITY: Only allows the super admin (sinaptick@gmail.com) to grant admin privileges
+ * CRITICAL SECURITY: Only allows admins (via custom claims) to grant admin privileges
  */
 export const setAdminClaim = onCall({
   region: REGION,
@@ -7612,14 +7542,13 @@ export const setAdminClaim = onCall({
     throw new HttpsError('unauthenticated', 'User must be authenticated');
   }
 
-  // Verify caller is the super admin (server-side check)
-  const callerDoc = await db.collection('users').doc(callerUid).get();
-  if (!callerDoc.exists || callerDoc.data().email !== 'sinaptick@gmail.com') {
+  // Verify caller is an admin (via custom claims)
+  const callerUser = await getAuth().getUser(callerUid);
+  if (!callerUser.customClaims?.admin) {
     logger.warn('Unauthorized admin claim attempt', {
-      callerUid,
-      callerEmail: callerDoc.data()?.email
+      callerUid
     });
-    throw new HttpsError('permission-denied', 'Only super admin can grant admin privileges');
+    throw new HttpsError('permission-denied', 'Only admins can grant admin privileges');
   }
 
   const { uid, admin } = request.data;
@@ -7987,3 +7916,332 @@ export const adminSendPasswordReset = onRequest({
     res.status(500).send("Internal server error: " + error.message);
   }
 });
+
+// ===== Broadcast message to all GroupMe bots =====
+// One-time use function to announce app migration
+export const broadcastToGroupMe = onRequest(
+  {
+    region: REGION,
+    cors: { origin: ALLOWED_ORIGINS },
+    secrets: [API_KEY]
+  },
+  async (req, res) => {
+    try {
+      // Require API key for security
+      if (!validateApiKey(req)) {
+        logger.warn("Unauthorized broadcast attempt");
+        return res.status(401).send("Unauthorized");
+      }
+
+      const { message, dryRun } = req.body || {};
+
+      if (!message) {
+        return res.status(400).json({
+          success: false,
+          error: "Message is required. Send JSON body with 'message' field."
+        });
+      }
+
+      logger.info("Broadcasting message to all GroupMe bots", { message, dryRun });
+
+      // Get all GroupMe bots
+      const botsSnapshot = await db.collection("groupme_bots").get();
+
+      if (botsSnapshot.empty) {
+        return res.json({ success: false, message: "No GroupMe bots found" });
+      }
+
+      const results = {
+        total: botsSnapshot.size,
+        sent: 0,
+        failed: 0,
+        skipped: 0,
+        errors: []
+      };
+
+      for (const botDoc of botsSnapshot.docs) {
+        const botData = botDoc.data();
+
+        if (!botData.bot_id) {
+          results.skipped++;
+          continue;
+        }
+
+        try {
+          if (dryRun) {
+            logger.info(`[DRY RUN] Would send to bot ${botData.bot_id} (Store ${botData.store})`);
+            results.sent++;
+            continue;
+          }
+
+          const postResponse = await fetch("https://api.groupme.com/v3/bots/post", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              bot_id: botData.bot_id,
+              text: message
+            })
+          });
+
+          if (postResponse.ok) {
+            results.sent++;
+            logger.info(`Sent to bot ${botData.bot_id} (Store ${botData.store})`);
+          } else {
+            results.failed++;
+            const errorText = await postResponse.text();
+            results.errors.push({
+              bot_id: botData.bot_id,
+              store: botData.store,
+              status: postResponse.status,
+              error: errorText
+            });
+          }
+
+          // Small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+        } catch (error) {
+          results.failed++;
+          results.errors.push({
+            bot_id: botData.bot_id,
+            store: botData.store,
+            error: error.message
+          });
+        }
+      }
+
+      logger.info("Broadcast complete", results);
+      res.json({
+        success: true,
+        message: dryRun ? "Dry run complete" : "Broadcast complete",
+        results
+      });
+
+    } catch (error) {
+      logger.error("Broadcast error:", error);
+      res.status(500).send("Internal server error: " + error.message);
+    }
+  }
+);
+
+// ===== STORE STATS AGGREGATION =====
+// Pre-aggregates store statistics hourly to avoid expensive queries in Market Overview
+// Results stored in store_stats collection, refreshed every hour
+
+/**
+ * Scheduled function to aggregate store stats every hour
+ * Processes scans from multiple time periods and stores results
+ */
+export const aggregateStoreStats = onSchedule(
+  {
+    schedule: "every 1 hours",
+    region: REGION,
+    timeoutSeconds: 540, // 9 minutes max
+    memory: "1GiB",
+  },
+  async (event) => {
+    logger.info("Starting store stats aggregation");
+
+    try {
+      const now = new Date();
+
+      // Define time periods to aggregate
+      const periods = [
+        { name: 'today', start: new Date(now.getFullYear(), now.getMonth(), now.getDate()) },
+        { name: 'week', start: (() => { const d = new Date(now); d.setDate(d.getDate() - d.getDay()); d.setHours(0,0,0,0); return d; })() },
+        { name: 'month', start: new Date(now.getFullYear(), now.getMonth(), 1) },
+        { name: 'last30days', start: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) },
+      ];
+
+      // Fetch scans from the last 30 days (covers all periods)
+      const cutoffDate = periods.find(p => p.name === 'last30days').start;
+      const scansSnap = await db.collection("scans")
+        .where("timestamp", ">=", Timestamp.fromDate(cutoffDate))
+        .orderBy("timestamp", "desc")
+        .get();
+
+      logger.info(`Processing ${scansSnap.size} scans for aggregation`);
+
+      // Aggregate by store and period
+      const storeStats = {};
+
+      scansSnap.forEach(doc => {
+        const scan = doc.data();
+        const storeNum = String(scan.storeNumber || 'unknown').replace(/^0+/, '') || '0';
+        const scanTime = scan.timestamp?.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+        const area = (scan.areaDescription || scan.area || '').toLowerCase().trim();
+
+        if (!storeStats[storeNum]) {
+          storeStats[storeNum] = {};
+          periods.forEach(p => {
+            storeStats[storeNum][p.name] = {
+              totalScans: 0,
+              claimedScans: 0,
+              areas: new Set(),
+              responseTimes: []
+            };
+          });
+        }
+
+        // Add to relevant periods
+        periods.forEach(period => {
+          if (scanTime >= period.start) {
+            const stats = storeStats[storeNum][period.name];
+            stats.totalScans++;
+            if (area) stats.areas.add(area);
+
+            if (scan.claimedBy || scan.claimedByName) {
+              stats.claimedScans++;
+
+              // Calculate response time if available
+              if (scan.timestamp && scan.claimedAt) {
+                const requestTime = scan.timestamp.toDate ? scan.timestamp.toDate() : new Date(scan.timestamp);
+                const claimTime = scan.claimedAt.toDate ? scan.claimedAt.toDate() : new Date(scan.claimedAt);
+                const responseMin = (claimTime - requestTime) / 60000;
+                if (responseMin > 0 && responseMin < 120) {
+                  stats.responseTimes.push(responseMin);
+                }
+              }
+            }
+          }
+        });
+      });
+
+      // Convert to storable format and write to Firestore
+      const batch = db.batch();
+      const statsCollection = db.collection("store_stats");
+
+      for (const [storeNum, periodStats] of Object.entries(storeStats)) {
+        const docData = {
+          storeNumber: storeNum,
+          lastUpdated: FieldValue.serverTimestamp(),
+        };
+
+        // Flatten period data
+        for (const [period, stats] of Object.entries(periodStats)) {
+          docData[period] = {
+            totalScans: stats.totalScans,
+            claimedScans: stats.claimedScans,
+            areaCount: stats.areas.size,
+            claimRate: stats.totalScans > 0 ? Math.round((stats.claimedScans / stats.totalScans) * 100) : 0,
+            avgResponseTime: stats.responseTimes.length > 0
+              ? Math.round(stats.responseTimes.reduce((a, b) => a + b, 0) / stats.responseTimes.length)
+              : null
+          };
+        }
+
+        batch.set(statsCollection.doc(storeNum), docData, { merge: true });
+      }
+
+      // Also store metadata about the aggregation
+      batch.set(statsCollection.doc('_metadata'), {
+        lastRun: FieldValue.serverTimestamp(),
+        storeCount: Object.keys(storeStats).length,
+        scansProcessed: scansSnap.size,
+      });
+
+      await batch.commit();
+      logger.info(`Store stats aggregation complete: ${Object.keys(storeStats).length} stores updated`);
+
+    } catch (error) {
+      logger.error("Store stats aggregation failed:", error);
+      throw error;
+    }
+  }
+);
+
+/**
+ * HTTP endpoint to get pre-aggregated store stats for Market Overview
+ * Much faster than querying all scans on every page load
+ */
+export const getStoreStats = onRequest(
+  {
+    region: REGION,
+    cors: ALLOWED_ORIGINS,
+  },
+  async (req, res) => {
+    // Only allow GET
+    if (req.method !== "GET") {
+      res.status(405).send("Method not allowed");
+      return;
+    }
+
+    try {
+      // Optional: verify user is admin
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const token = authHeader.substring(7);
+          const decodedToken = await getAuth().verifyIdToken(token);
+          // Could add admin check here if needed
+        } catch (authError) {
+          // Continue without auth - stats are not sensitive
+        }
+      }
+
+      const period = req.query.period || 'week'; // today, week, month, last30days
+      const topN = parseInt(req.query.top) || 10;
+
+      // Fetch pre-aggregated stats
+      const statsSnap = await db.collection("store_stats").get();
+
+      if (statsSnap.empty) {
+        res.json({
+          success: true,
+          message: "No aggregated stats yet. Run aggregateStoreStats first.",
+          stores: [],
+          totals: { totalScans: 0, totalAreas: 0, storesActive: 0 }
+        });
+        return;
+      }
+
+      const stores = [];
+      let totalScans = 0;
+      let totalAreas = 0;
+      let metadata = null;
+
+      statsSnap.forEach(doc => {
+        if (doc.id === '_metadata') {
+          metadata = doc.data();
+          return;
+        }
+
+        const data = doc.data();
+        const periodData = data[period];
+
+        if (periodData && periodData.totalScans > 0) {
+          stores.push({
+            storeNumber: data.storeNumber,
+            totalScans: periodData.totalScans,
+            claimedScans: periodData.claimedScans,
+            areaCount: periodData.areaCount,
+            claimRate: periodData.claimRate,
+            avgResponseTime: periodData.avgResponseTime
+          });
+          totalScans += periodData.totalScans;
+          totalAreas += periodData.areaCount;
+        }
+      });
+
+      // Sort by total scans and take top N
+      stores.sort((a, b) => b.totalScans - a.totalScans);
+      const topStores = stores.slice(0, topN);
+
+      res.json({
+        success: true,
+        period,
+        lastUpdated: metadata?.lastRun || null,
+        stores: topStores,
+        totals: {
+          totalScans,
+          totalAreas,
+          storesActive: stores.length
+        }
+      });
+
+    } catch (error) {
+      logger.error("getStoreStats error:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
